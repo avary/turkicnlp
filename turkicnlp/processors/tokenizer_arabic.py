@@ -1,8 +1,9 @@
 """
-Tokenizer for Perso-Arabic script Turkic languages (Uyghur, Ottoman Turkish).
+Tokenizer for Perso-Arabic script Turkic languages (Uyghur, Ottoman Turkish,
+South Azerbaijani).
 
-Handles RTL text, ZWNJ word boundaries, Arabic punctuation, and
-kashida (tatweel) stripping.
+Handles RTL text, ZWNJ inside words, Arabic punctuation, decimals written
+with Arabic-Indic digits, and kashida (tatweel) stripping.
 """
 
 from __future__ import annotations
@@ -10,8 +11,9 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from turkicnlp.models.document import Document, Sentence, Token, Word
+from turkicnlp.models.document import Document
 from turkicnlp.processors.base import Processor
+from turkicnlp.processors.tokenizer import _Tok, build_sentences, split_sentences
 from turkicnlp.scripts import Script
 
 
@@ -20,10 +22,13 @@ class ArabicScriptTokenizer(Processor):
 
     Key differences from Latin/Cyrillic:
     - RTL text direction
-    - ZWNJ (U+200C) as word boundary in some contexts
+    - ZWNJ (U+200C) joins the parts of one word (``مەكتەپ‌كە``); it is
+      *not* a token boundary
     - No uppercase/lowercase distinction
-    - Arabic punctuation (``،`` ``؛`` ``؟``)
-    - Kashida (tatweel, U+0640) stripping
+    - Arabic punctuation (``،`` ``؛`` ``؟`` ``۔``)
+    - Kashida (tatweel, U+0640) and bidi control marks are stripped from the
+      token *form*; ``start_char``/``end_char`` always index the original text
+    - Decimals (``3.14``, ``٣٫١٤``, ``3,5``) stay one token
     """
 
     NAME = "tokenize"
@@ -31,10 +36,20 @@ class ArabicScriptTokenizer(Processor):
     REQUIRES = []
     SUPPORTED_SCRIPTS = [Script.PERSO_ARABIC]
 
-    SENT_SPLIT = re.compile(r"(?<=[.!?؟۔])\s+")
-    ZWNJ = "\u200c"
-    KASHIDA = "\u0640"
-    ARABIC_PUNCT = re.compile(r"([،؛؟!.\(\)\[\]«»\u201c\u201d'\"]+)")
+    ZWNJ = "‌"
+    KASHIDA = "ـ"
+    # Invisible characters removed from token forms (offsets unaffected).
+    STRIP_CHARS = "ـ‎‏؜‪‫‬‭‮⁦⁧⁨⁩"
+    PUNCT_CHARS = "،؛؟!.,;:\\(\\)\\[\\]\\{\\}«»“”‘’'\"۔…؍٭"
+    ARABIC_PUNCT = re.compile(rf"(?:[{PUNCT_CHARS}])+")
+    # A word is a run of non-space, non-punctuation characters; a "." or ","
+    # (or Arabic decimal/thousands separator) between two digits is kept
+    # inside the word so decimals are not split.
+    TOKEN = re.compile(
+        rf"(?:[^\s{PUNCT_CHARS}]|(?<=\d)[.,](?=\d))+"  # word / number
+        r"|\.{2,}"  # ellipsis
+        rf"|[{PUNCT_CHARS}]"  # single punctuation mark
+    )
 
     def __init__(
         self,
@@ -50,59 +65,29 @@ class ArabicScriptTokenizer(Processor):
         self._normalize_map = self._load_normalization(self.lang)
         self._loaded = True
 
+    def tokenize(self, text: str) -> list[_Tok]:
+        """Return located tokens; offsets index the original ``text``."""
+        toks: list[_Tok] = []
+        for m in self.TOKEN.finditer(text):
+            surface = m.group()
+            form = self._normalize(surface)
+            if not form:
+                continue  # e.g. a stray kashida or bidi mark
+            is_punct = bool(self.ARABIC_PUNCT.fullmatch(surface))
+            toks.append(_Tok(surface, m.start(), m.end(), punct=is_punct, form=form))
+        return toks
+
     def process(self, doc: Document) -> Document:
         """Tokenize Perso-Arabic script text."""
-        text = self._normalize(doc.text)
-
-        raw_sents = self.SENT_SPLIT.split(text)
-        raw_sents = [s.strip() for s in raw_sents if s.strip()]
-
-        char_offset = 0
-        for sent_text in raw_sents:
-            sentence = Sentence(text=sent_text)
-
-            word_id = 1
-            token_pattern = re.compile(rf"[^\s{self.ZWNJ}]+")
-            parts_pattern = re.compile(r"[،؛؟!.\(\)\[\]«»\u201c\u201d'\"]+|[^،؛؟!.\(\)\[\]«»\u201c\u201d'\"]+")
-
-            for match in token_pattern.finditer(sent_text):
-                raw_token = match.group()
-                raw_start = match.start()
-
-                for part_match in parts_pattern.finditer(raw_token):
-                    part_text = part_match.group()
-                    part_start = char_offset + raw_start + part_match.start()
-                    part_end = part_start + len(part_text)
-                    is_punct = bool(self.ARABIC_PUNCT.fullmatch(part_text))
-
-                    word = Word(
-                        id=word_id,
-                        text=part_text,
-                        upos="PUNCT" if is_punct else None,
-                        lemma=part_text if is_punct else None,
-                        start_char=part_start,
-                        end_char=part_end,
-                    )
-                    token = Token(
-                        id=(word_id,),
-                        text=part_text,
-                        words=[word],
-                        start_char=part_start,
-                        end_char=part_end,
-                    )
-                    sentence.tokens.append(token)
-                    sentence.words.append(word)
-                    word_id += 1
-
-            doc.sentences.append(sentence)
-            char_offset += len(sent_text) + 1
-
+        toks = self.tokenize(doc.text or "")
+        build_sentences(doc, split_sentences(toks, case_sensitive=False))
         doc._processor_log.append("tokenize:arabic_script")
         return doc
 
     def _normalize(self, text: str) -> str:
         """Normalize Arabic script text (kashida removal, alef variants, etc.)."""
-        text = text.replace(self.KASHIDA, "")
+        for ch in self.STRIP_CHARS:
+            text = text.replace(ch, "")
         text = re.sub(r"[أإآٱ]", "ا", text)
         for old, new in self._normalize_map.items():
             text = text.replace(old, new)

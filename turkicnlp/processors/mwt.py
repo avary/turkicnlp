@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 from turkicnlp.models.document import Document, Token, Word
 from turkicnlp.processors.base import Processor
-from turkicnlp.resources.registry import ModelRegistry
 
 
 class MWTProcessor(Processor):

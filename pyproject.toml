@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "turkicnlp"
-version = "0.4.0"
+version = "0.5.0"
 description = "NLP toolkit for Turkic languages"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     {name = "Sherzod Hakimov", email = "sherzodhakimov@gmail.com"},
 ]
@@ -18,13 +18,12 @@ keywords = [
     "morphology", "pos-tagging", "dependency-parsing", "asr", "ner", "machine-translation", "embeddings"
 ]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
     "Topic :: Text Processing :: Linguistic",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -90,12 +89,13 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/turkic-nlp/turkicnlp"
-Documentation = "https://turkic-nlp.github.io/toolkit"
+Documentation = "https://github.com/turkic-nlp/turkicnlp#readme"
 Repository = "https://github.com/turkic-nlp/turkicnlp"
 Issues = "https://github.com/turkic-nlp/turkicnlp/issues"
 
 [tool.setuptools.packages.find]
 include = ["turkicnlp*"]
+exclude = ["turkicnlp.tests", "turkicnlp.tests.*"]
 
 [tool.setuptools]
 include-package-data = true
@@ -106,7 +106,7 @@ turkicnlp = [
     "resources/lexicons/*.json",
     "resources/mwt_rules/*.json",
     "resources/mwt_rules_extracted/*.json",
-    "resources/tag_mappings/*.json",
+    "resources/prompts/*.json",
 ]
 
 [tool.pytest.ini_options]
@@ -117,17 +117,17 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
 
 [tool.black]
 line-length = 100
-target-version = ["py39"]
+target-version = ["py310"]

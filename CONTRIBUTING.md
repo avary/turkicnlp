@@ -97,7 +97,7 @@ A new language usually needs the following pieces, roughly in this order. Each c
 1. **Script configuration.** Add a `ScriptConfig` entry in `turkicnlp/scripts/__init__.py`: the available scripts,
    the primary script and the Apertium script.
 2. **Transliteration.** Add mapping tables to `TRANSLITERATION_TABLES` in `turkicnlp/scripts/transliterator.py`, including the Common Turkic
-   Alphabet direction. Add round-trip tests to `tests/test_transliterator.py`.
+   Alphabet direction. Add round-trip tests to `turkicnlp/tests/test_transliterator.py`.
 3. **Tokenization.** Add abbreviations (in `processors/tokenizer.py`) and multi-word token rules
    (`resources/mwt_rules/<lang>.json`) where they apply.
 4. **Catalog entry.** Add the language to `resources/catalog.json` with one block per script and processor. Each
@@ -151,7 +151,7 @@ change.
    dependencies.
 5. Configuration reaches the processor as `Pipeline(..., <processor>_<key>=value)`. For example,
    `translate_tgt_lang="eng"` arrives as `self.config["tgt_lang"]`.
-6. Add tests with the model mocked (see `tests/test_translate.py` and `tests/test_asr.py`), a README section with a
+6. Add tests with the model mocked (see `turkicnlp/tests/test_translate.py` and `turkicnlp/tests/test_asr.py`), a README section with a
    runnable example, and ideally a notebook in the code-samples repository.
 
 ## Contributing models and data
@@ -184,7 +184,7 @@ python -m pytest --cov=turkicnlp
 
 ## Code style
 
-- Python ≥ 3.9 syntax with `from __future__ import annotations`, type hints on public functions, and Google-style
+- Python ≥ 3.10 syntax with `from __future__ import annotations`, type hints on public functions, and Google-style
   docstrings.
 - Format and lint before committing:
 
@@ -207,7 +207,7 @@ python -m pytest --cov=turkicnlp
 3. Keep each pull request focused. Include tests, update the README for user-visible changes, and update
    [ROADMAP.md](ROADMAP.md) if you complete or add an item.
 4. Describe what changed, how you tested it, and, for linguistic changes, before/after output for a few sentences.
-5. A maintainer reviews the pull request. CI must pass (installation tests across OS × Python × extras).
+5. A maintainer reviews the pull request. CI must pass: installation tests across OS × Python × extras and `pytest -m "not slow"`.
 
 ## Licensing
 

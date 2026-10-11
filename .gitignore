@@ -207,3 +207,18 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local experiment scripts and outputs in the repository root
+/run_*.py
+/evaluate_*.py
+/morph_evaluations.txt
+/stanza_evaluation.txt
+/glotlid_confusion_matrix.png
+/tuecl_files/
+/_review.tgz
+# Local environments and editor settings
+/.venv*/
+/lang_venv/
+/venv-asr/
+/.idea/
+/.claude/

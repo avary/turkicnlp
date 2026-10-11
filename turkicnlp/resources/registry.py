@@ -8,8 +8,10 @@ download, and path resolution with script-aware directory layout.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -28,13 +30,39 @@ class ModelRegistry:
     """
 
     _catalog: Optional[dict] = None
-    CATALOG_URL = "https://turkicnlp.github.io/models/catalog.json"
+    CATALOG_URL = (
+        "https://raw.githubusercontent.com/turkic-nlp/turkicnlp/main/"
+        "turkicnlp/resources/catalog.json"
+    )
+    _dir_override = threading.local()
 
     @classmethod
     def default_dir(cls) -> Path:
-        """Return the default model directory, respecting env override."""
+        """Return the model directory.
+
+        Precedence: :meth:`using_dir` (e.g. ``Pipeline(model_dir=...)``), then
+        the :envvar:`TURKICNLP_MODELS_DIR` environment variable, then
+        ``~/.turkicnlp/models``.
+        """
+        override = getattr(cls._dir_override, "path", None)
+        if override:
+            return Path(override)
         env_dir = os.environ.get("TURKICNLP_MODELS_DIR")
         return Path(env_dir) if env_dir else DEFAULT_MODEL_DIR
+
+    @classmethod
+    @contextlib.contextmanager
+    def using_dir(cls, path):
+        """Temporarily use ``path`` as model directory (in this thread)."""
+        if not path:
+            yield
+            return
+        previous = getattr(cls._dir_override, "path", None)
+        cls._dir_override.path = str(Path(path).expanduser())
+        try:
+            yield
+        finally:
+            cls._dir_override.path = previous
 
     @classmethod
     def get_model_path(
@@ -70,20 +98,30 @@ class ModelRegistry:
 
     @classmethod
     def load_catalog(cls) -> dict:
-        """Load the model catalog, preferring local cache.
+        """Load the model catalog.
+
+        The catalog packaged with the installed version is used, so upgrading
+        the library always brings its catalog. A ``catalog.json`` in the model
+        directory is only used when the packaged one is missing, or when the
+        :envvar:`TURKICNLP_CATALOG` environment variable points to a file.
 
         Returns:
             The catalog dictionary.
         """
         if cls._catalog is not None:
             return cls._catalog
-        catalog_path = cls.default_dir() / "catalog.json"
-        if catalog_path.exists():
-            with open(catalog_path) as f:
+        env_catalog = os.environ.get("TURKICNLP_CATALOG")
+        if env_catalog:
+            with open(env_catalog, encoding="utf-8") as f:
                 cls._catalog = json.load(f)
-        else:
-            cls._catalog = cls._load_packaged_catalog()
-            if cls._catalog is None:
+            return cls._catalog
+        cls._catalog = cls._load_packaged_catalog()
+        if cls._catalog is None:
+            catalog_path = cls.default_dir() / "catalog.json"
+            if catalog_path.exists():
+                with open(catalog_path, encoding="utf-8") as f:
+                    cls._catalog = json.load(f)
+            else:
                 cls._catalog = cls._fetch_remote_catalog()
         return cls._catalog
 
@@ -108,10 +146,12 @@ class ModelRegistry:
             return None
 
         try:
-            with resources.open_text("turkicnlp.resources", "catalog.json") as f:
-                return json.load(f)
-        except (FileNotFoundError, ModuleNotFoundError):
+            text = resources.files("turkicnlp.resources").joinpath("catalog.json").read_text(
+                encoding="utf-8"
+            )
+        except (FileNotFoundError, ModuleNotFoundError, AttributeError):
             return None
+        return json.loads(text)
 
 
 class ProcessorRegistry:
@@ -152,10 +192,21 @@ class ProcessorRegistry:
         return cls._registry[name][backend]
 
     @classmethod
+    def implemented_backends(cls, name: str) -> list[str]:
+        """Registered backends of ``name`` that are implemented (no placeholders)."""
+        return [
+            b for b, c in cls._registry.get(name, {}).items()
+            if getattr(c, "IMPLEMENTED", True)
+        ]
+
+    @classmethod
     def get_any(cls, name: str) -> type:
-        """Get any implementation of a processor (for dependency checking)."""
+        """Get an implementation of a processor, preferring implemented ones."""
         if name not in cls._registry:
             raise ValueError(f"Unknown processor: {name}")
+        implemented = cls.implemented_backends(name)
+        if implemented:
+            return cls._registry[name][implemented[0]]
         return next(iter(cls._registry[name].values()))
 
     @classmethod
@@ -260,6 +311,22 @@ def _register_builtins() -> None:
         pass  # torch/transformers not installed; multilingual morph backend unavailable
     ProcessorRegistry.register("embeddings", "nllb", NLLBEmbeddingsProcessor)
     ProcessorRegistry.register("translate", "nllb", NLLBTranslateProcessor)
+
+    # LLM backends (OpenAI-compatible API or local Hugging Face model)
+    from turkicnlp.processors.llm_backend import (
+        ApertiumLLMMorphProcessor,
+        LLMMorphAnalyzer,
+        LLMNERProcessor,
+        LLMSentimentProcessor,
+        LLMSpellcheckProcessor,
+        LLMTranslateProcessor,
+    )
+    ProcessorRegistry.register("morph", "llm", LLMMorphAnalyzer)
+    ProcessorRegistry.register("morph", "apertium_llm", ApertiumLLMMorphProcessor)
+    ProcessorRegistry.register("ner", "llm", LLMNERProcessor)
+    ProcessorRegistry.register("translate", "llm", LLMTranslateProcessor)
+    ProcessorRegistry.register("sentiment", "llm", LLMSentimentProcessor)
+    ProcessorRegistry.register("spellcheck", "llm", LLMSpellcheckProcessor)
 
     # Morpheme-aware SentencePiece tokenizer (sentencepiece imported on load)
     from turkicnlp.processors.sp_tokenizer import MorphemeAwareSPTokenizer

@@ -11,8 +11,8 @@ from __future__ import annotations
 from typing import Optional
 
 from turkicnlp.models.document import Document
-from turkicnlp.processors.base import Processor, ProcessorRequirementsError
-from turkicnlp.scripts import Script, get_script_config, ScriptConfig
+from turkicnlp.processors.base import Processor
+from turkicnlp.scripts import Script, get_script_config
 from turkicnlp.scripts.detector import detect_script
 from turkicnlp.scripts.transliterator import Transliterator
 
@@ -22,6 +22,7 @@ PROCESSOR_ORDER: list[str] = [
     "script_detect",
     "transliterate",
     "tokenize",
+    "spellcheck",
     "mwt",
     "morph",
     "morph_neural",
@@ -40,8 +41,31 @@ PROCESSOR_ORDER: list[str] = [
 # default: they download large models or need optional extras. Request them
 # explicitly, e.g. ``Pipeline("kaz", processors=["tokenize", "translate"])``.
 OPTIONAL_PROCESSORS: frozenset[str] = frozenset(
-    {"asr", "translate", "embeddings", "sentiment", "sp_tokenize", "morpheme_tokenize", "langid"}
+    {"asr", "translate", "embeddings", "sentiment", "sp_tokenize", "morpheme_tokenize", "langid",
+     "spellcheck"}
 )
+
+
+# Word fields and the annotation layer (``Processor.PROVIDES``) that writes them.
+FIELD_LAYERS: dict[str, str] = {
+    "lemma": "lemma",
+    "upos": "pos",
+    "xpos": "pos",
+    "feats": "feats",
+    "head": "depparse",
+    "deprel": "depparse",
+}
+_FIELDS = tuple(FIELD_LAYERS)
+
+
+def _catalog_backend(proc_info: object) -> Optional[str]:
+    """The default backend a catalog entry names (``None`` if it names none)."""
+    if not isinstance(proc_info, dict):
+        return None
+    backend = proc_info.get("default")
+    if backend is None and proc_info.get("backends"):
+        backend = next(iter(proc_info["backends"].keys()), None)
+    return backend
 
 
 def default_processors(proc_catalog: dict) -> list[str]:
@@ -50,18 +74,36 @@ def default_processors(proc_catalog: dict) -> list[str]:
     Takes the processors the catalog lists for the language/script, drops the
     optional heavy ones (:data:`OPTIONAL_PROCESSORS`) and, when both an Apertium
     ``morph`` and the neural ``morph_neural`` analyser exist, keeps only
-    ``morph`` so the two do not overwrite each other's UPOS/FEATS.
+    ``morph`` (also dropping ``feats``/``lemma`` when they come from the
+    same Glot500 morph model). A processor is kept only when the backend the catalog names for
+    it is registered and implemented (e.g. Glot500 backends need torch).
     """
     from turkicnlp.resources.registry import ProcessorRegistry
 
     names = [p for p in proc_catalog if p not in OPTIONAL_PROCESSORS]
-    if "morph" in names and "morph_neural" in names:
-        names.remove("morph_neural")
-    registered = ProcessorRegistry._registry
-    names = [p for p in names if p in registered or p == "tokenize"]
-    if "tokenize" not in names:
-        names.insert(0, "tokenize")
-    return names
+    if "morph" in names:
+        # The Apertium analyser and the Glot500 morph model provide the same
+        # fields; running both would mix two analyses per word.
+        if "morph_neural" in names:
+            names.remove("morph_neural")
+        for p in ("feats", "lemma"):
+            if p in names and _catalog_backend(proc_catalog.get(p)) == "multilingual_glot500_morph":
+                names.remove(p)
+    kept = []
+    for p in names:
+        if p == "tokenize":
+            kept.append(p)
+            continue
+        implemented = ProcessorRegistry.implemented_backends(p)
+        backend = _catalog_backend(proc_catalog.get(p))
+        if backend is not None:
+            if backend in implemented:
+                kept.append(p)
+        elif implemented:
+            kept.append(p)
+    if "tokenize" not in kept:
+        kept.insert(0, "tokenize")
+    return kept
 
 
 class Pipeline:
@@ -73,12 +115,22 @@ class Pipeline:
         nlp = Pipeline("kaz", processors=["tokenize", "pos", "lemma", "depparse"])
         doc = nlp("Мен мектепке бардым")
 
+    Field ownership: every word field has exactly one owner per pipeline, the
+    last processor in execution order that provides it (``pos`` owns
+    UPOS/XPOS, ``feats`` FEATS, ``lemma`` LEMMA, ``depparse`` HEAD/DEPREL; a
+    full analyser such as ``morph`` owns the fields no later step provides).
+    Values written by other processors are kept in ``word._provenance`` but not
+    in the word fields, and FEATS from a different processor than UPOS are
+    dropped for a word when that processor's own UPOS disagrees.
+
     Args:
         lang: ISO 639-3 language code.
         processors: Processor names to use. ``None`` loads the default set for
             the language (catalog processors without the optional heavy ones in
             :data:`OPTIONAL_PROCESSORS`, see :func:`default_processors`).
-        script: Script code (``Cyrl``, ``Latn``, ``Arab``) or ``auto``.
+        script: Script code (``Cyrl``, ``Latn``, ``Arab``) or ``auto``. When
+            the language has no models for this script, the input is
+            transliterated to the script that has them and back.
         transliterate_to: Target script for transliteration bridging.
         model_dir: Override default model directory.
         use_gpu: Whether to use GPU for neural processors.
@@ -98,7 +150,9 @@ class Pipeline:
     ) -> None:
         self.lang = lang
         self.use_gpu = use_gpu
+        self.model_dir = model_dir
         self._processors: list[Processor] = []
+        self._owners: dict[str, Processor] = {}
         self._script_config = get_script_config(lang)
         self._requested_processors = processors
         self._processor_configs = processor_configs
@@ -119,83 +173,194 @@ class Pipeline:
 
         self._transliterator: Optional[Transliterator] = None
         self._transliterate_back_enabled = False
+        source_script = self._script or self._script_config.primary
 
         if transliterate_to:
             target_script = Script(transliterate_to)
-            source_script = self._script or self._script_config.primary
             if target_script != source_script:
-                self._transliterator = Transliterator(lang, source_script, target_script)
-                try:
-                    Transliterator(lang, target_script, source_script)
-                    self._transliterate_back_enabled = True
-                except ValueError:
-                    self._transliterate_back_enabled = False
-                self._model_script = target_script
+                self._set_bridge(source_script, target_script)
             else:
                 self._model_script = source_script
         else:
-            self._model_script = self._script or self._script_config.primary
+            self._model_script = source_script
+            model_script = self._catalog_model_script(source_script)
+            if model_script is not None and model_script != source_script:
+                # No models for this script: bridge through the script that has them.
+                try:
+                    self._set_bridge(source_script, model_script)
+                except ValueError:
+                    pass
 
         if self._autoload:
             self._build_processors()
+
+    # ------------------------------------------------------------------
+    # Script handling
+
+    def _set_bridge(self, source: Script, target: Script) -> None:
+        self._transliterator = Transliterator(self.lang, source, target)
+        try:
+            Transliterator(self.lang, target, source)
+            self._transliterate_back_enabled = True
+        except ValueError:
+            self._transliterate_back_enabled = False
+        self._model_script = target
+
+    def _lang_catalog(self) -> dict:
+        from turkicnlp.resources.registry import ModelRegistry
+
+        info = ModelRegistry.load_catalog().get(self.lang, {})
+        return info if isinstance(info, dict) else {}
+
+    def _catalog_model_script(self, script: Script) -> Optional[Script]:
+        """The script whose catalog models serve input in ``script``."""
+        info = self._lang_catalog()
+        section = info.get("processors", {})
+        if not section or str(script) in section:
+            return script
+        primary = info.get("scripts", {}).get("primary")
+        if primary in section:
+            return Script(primary)
+        return Script(next(iter(section)))
+
+    def _proc_catalog(self) -> dict:
+        info = self._lang_catalog()
+        section = info.get("processors", {})
+        script_key = str(self._model_script)
+        if script_key in section:
+            return section[script_key]
+        if section:
+            primary = info.get("scripts", {}).get("primary")
+            return section.get(primary, next(iter(section.values())))
+        return {}
+
+    # ------------------------------------------------------------------
+    # Processor resolution
+
+    def _choose_backend(self, proc_name: str, proc_catalog: dict) -> Optional[str]:
+        """Backend for ``proc_name``: user option, catalog default, then fallbacks.
+
+        Placeholder (unimplemented) backends are never chosen implicitly.
+        """
+        from turkicnlp.resources.registry import ProcessorRegistry
+
+        backend_key = f"{proc_name}_backend"
+        if self._processor_configs.get(backend_key) is not None:
+            return str(self._processor_configs[backend_key])
+        backend = _catalog_backend(proc_catalog.get(proc_name))
+        if backend is not None:
+            return backend
+        if proc_name == "tokenize":
+            return "rule_arabic" if self._model_script == Script.PERSO_ARABIC else "rule"
+        implemented = ProcessorRegistry.implemented_backends(proc_name)
+        if "llm" in implemented:
+            return "llm"
+        return implemented[0] if implemented else None
+
+    def _plan(self) -> list[tuple[str, str]]:
+        """Resolve processors and backends without loading anything."""
+        from turkicnlp.resources.registry import ProcessorRegistry
+
+        proc_catalog = self._proc_catalog()
+        requested = self._requested_processors
+        explicit = requested is not None
+        if requested is None:
+            requested = default_processors(proc_catalog)
+        names = self._resolve_dependencies(list(requested), proc_catalog)
+
+        plan: list[tuple[str, str]] = []
+        for proc_name in names:
+            if proc_name in ("script_detect", "transliterate", "transliterate_back", "asr"):
+                # "asr" runs before the text pipeline, see from_audio()
+                continue
+            backend = self._choose_backend(proc_name, proc_catalog)
+            if backend is None:
+                if explicit and proc_name in requested:
+                    raise ValueError(
+                        f"No backend available for processor '{proc_name}' "
+                        f"({self.lang}, {self._model_script}). Pass "
+                        f"{proc_name}_backend=... to choose one."
+                    )
+                raise ValueError(
+                    f"Processor '{proc_name}' is needed by "
+                    f"{[p for p in requested]} but has no backend for "
+                    f"{self.lang} ({self._model_script})."
+                )
+            cls = ProcessorRegistry.get(proc_name, backend)
+            if not getattr(cls, "IMPLEMENTED", True) and backend_key_missing(
+                self._processor_configs, proc_name
+            ):
+                raise ValueError(
+                    f"Backend '{backend}' of '{proc_name}' is not implemented yet."
+                )
+            plan.append((proc_name, backend))
+        return plan
+
+    def _resolve_dependencies(
+        self, requested: list[str], proc_catalog: Optional[dict] = None
+    ) -> list[str]:
+        """Ensure all processor dependencies are satisfied.
+
+        Requirements are read from the backend that will actually run, e.g.
+        requesting ``["depparse"]`` adds ``tokenize`` and ``pos``.
+        """
+        from turkicnlp.resources.registry import ProcessorRegistry
+
+        if proc_catalog is None:
+            proc_catalog = self._proc_catalog()
+        needed: set[str] = set()
+        queue = list(requested)
+        while queue:
+            proc_name = queue.pop()
+            if proc_name in needed:
+                continue
+            needed.add(proc_name)
+            backend = self._choose_backend(proc_name, proc_catalog)
+            try:
+                proc_class = (
+                    ProcessorRegistry.get(proc_name, backend)
+                    if backend is not None
+                    else ProcessorRegistry.get_any(proc_name)
+                )
+            except ValueError:
+                continue
+            for req in proc_class.REQUIRES:
+                if req not in needed:
+                    queue.append(req)
+
+        resolved = [p for p in PROCESSOR_ORDER if p in needed]
+        for proc_name in requested:
+            if proc_name in needed and proc_name not in resolved:
+                resolved.append(proc_name)
+        return resolved
 
     def _build_processors(self) -> None:
         """Resolve, download, and load processors."""
         if self._processors:
             return
+        from turkicnlp.resources.registry import ModelRegistry
 
-        from turkicnlp.resources.registry import ProcessorRegistry, ModelRegistry
-        from turkicnlp.resources.downloader import download
+        with ModelRegistry.using_dir(self.model_dir):
+            self._load_plan(self._plan())
+        self._owners = self._field_owners()
 
-        catalog = ModelRegistry.load_catalog()
-        lang_info = catalog.get(self.lang, {})
-        processors_section = lang_info.get("processors", {})
-        script_key = str(self._model_script)
-        if script_key in processors_section:
-            proc_catalog = processors_section[script_key]
-        elif processors_section:
-            primary = lang_info.get("scripts", {}).get("primary")
-            proc_catalog = processors_section.get(primary, next(iter(processors_section.values())))
-        else:
-            proc_catalog = {}
+    def _load_plan(self, plan: list[tuple[str, str]]) -> None:
+        import importlib.util
 
-        requested = self._requested_processors
-        if requested is None:
-            requested = default_processors(proc_catalog)
+        from turkicnlp.resources.downloader import download, hf_snapshot_complete
+        from turkicnlp.resources.registry import ModelRegistry, ProcessorRegistry
 
-        resolved = self._resolve_dependencies(requested)
-
-        for proc_name in resolved:
-            if proc_name in ("script_detect", "transliterate", "transliterate_back", "asr"):
-                # "asr" runs before the text pipeline, see from_audio()
-                continue
-
+        proc_catalog = self._proc_catalog()
+        for proc_name, backend in plan:
             backend_key = f"{proc_name}_backend"
-            backend = (
-                self._processor_configs.get(backend_key)
-                if backend_key in self._processor_configs
-                else None
-            )
-
-            proc_info = proc_catalog.get(proc_name, {})
-            if backend is None and isinstance(proc_info, dict):
-                backend = proc_info.get("default")
-                if backend is None and "backends" in proc_info:
-                    backend = next(iter(proc_info["backends"].keys()), None)
-
-            if backend is None:
-                if proc_name == "tokenize":
-                    if self._model_script == Script.PERSO_ARABIC:
-                        backend = "rule_arabic"
-                    else:
-                        backend = "rule"
-                else:
-                    backend = next(iter(ProcessorRegistry._registry.get(proc_name, {})), None)
-
-            if backend is None:
-                raise ValueError(f"No backend available for processor '{proc_name}'.")
-
             config: dict[str, object] = {"use_gpu": self.use_gpu}
+            if self.model_dir:
+                config["model_dir"] = self.model_dir
+            # Shared LLM settings (llm_model, llm_base_url, llm_api_key, llm_client, ...)
+            # reach every processor; "<proc>_llm_*" overrides them for one processor.
+            for key, value in self._processor_configs.items():
+                if key.startswith("llm_"):
+                    config[key] = value
             prefix = f"{proc_name}_"
             for key, value in self._processor_configs.items():
                 if key.startswith(prefix) and key != backend_key:
@@ -204,78 +369,114 @@ class Pipeline:
             proc_class = ProcessorRegistry.get(proc_name, str(backend))
             proc = proc_class(lang=self.lang, script=self._model_script, config=config)
 
+            proc_info = proc_catalog.get(proc_name, {})
             backend_info = {}
             if isinstance(proc_info, dict):
                 backend_info = proc_info.get("backends", {}).get(str(backend), {}) or {}
 
             model_path = None
             backend_type = backend_info.get("type")
+            script = str(self._model_script)
             if backend_type == "huggingface_seq2seq":
                 model_name = backend_info.get("model_name")
-                shared_exists = False
-                if model_name:
-                    shared_dir = (
-                        ModelRegistry.default_dir()
-                        / "huggingface"
-                        / str(model_name).replace("/", "--")
+                shared_dir = (
+                    ModelRegistry.default_dir() / "huggingface" / str(model_name).replace("/", "--")
+                ) if model_name else None
+                if shared_dir is None or not hf_snapshot_complete(shared_dir):
+                    download(self.lang, processors=[proc_name], script=script)
+            elif backend_type in ("stanza", "stanza_custom"):
+                if importlib.util.find_spec("stanza") is None:
+                    raise ImportError(
+                        f"The '{backend}' backend of '{proc_name}' needs Stanza. "
+                        'Install it with: pip install "turkicnlp[stanza]"'
                     )
-                    shared_exists = (shared_dir / "config.json").exists()
-                if not shared_exists:
-                    download(self.lang, processors=[proc_name], script=str(self._model_script))
-            elif backend_type == "stanza_custom":
-                # Custom-trained Stanza models: ensure files are downloaded
-                custom_dir = ModelRegistry.default_dir() / "stanza_custom" / self.lang
-                filename = backend_info.get("filename", f"{proc_name}.pt")
-                pretrain_filename = backend_info.get("pretrain_filename")
-                needs_download = not (custom_dir / filename).exists()
-                if not needs_download and pretrain_filename:
-                    needs_download = not (custom_dir / pretrain_filename).exists()
-                if needs_download:
-                    download(self.lang, processors=[proc_name], script=str(self._model_script))
-            elif backend_type == "multilingual_glot500_model":
-                # Shared model — download handled inside the processor's load()
-                pass
-            elif backend_type == "multilingual_glot500_morph":
-                # Shared morph model — download handled inside the processor's load()
-                pass
+                if backend_type == "stanza_custom":
+                    custom_dir = ModelRegistry.default_dir() / "stanza_custom" / self.lang
+                    filename = backend_info.get("filename", f"{proc_name}.pt")
+                    pretrain_filename = backend_info.get("pretrain_filename")
+                    needs_download = not (custom_dir / filename).exists()
+                    if not needs_download and pretrain_filename:
+                        needs_download = not (custom_dir / pretrain_filename).exists()
+                    if needs_download:
+                        download(self.lang, processors=[proc_name], script=script)
             elif backend_type in ("apertium_fst", "neural_model"):
                 try:
                     model_path = ModelRegistry.get_model_path(
-                        self.lang, proc_name, str(backend), script=str(self._model_script)
+                        self.lang, proc_name, str(backend), script=script
                     )
                 except FileNotFoundError:
-                    download(self.lang, processors=[proc_name], script=str(self._model_script))
-                    if backend_type in ("apertium_fst", "neural_model"):
-                        model_path = ModelRegistry.get_model_path(
-                            self.lang, proc_name, str(backend), script=str(self._model_script)
-                        )
+                    download(self.lang, processors=[proc_name], script=script)
+                    model_path = ModelRegistry.get_model_path(
+                        self.lang, proc_name, str(backend), script=script
+                    )
+            # Glot500 backends download their shared model inside load().
 
-            proc.load(model_path if model_path is not None else "")
+            proc.load(str(model_path) if model_path is not None else "")
             self._processors.append(proc)
 
-    def _resolve_dependencies(self, requested: list[str]) -> list[str]:
-        """Ensure all processor dependencies are satisfied.
+    def _field_owners(self) -> dict[str, Processor]:
+        owners: dict[str, Processor] = {}
+        for proc in self._processors:
+            provides = set(getattr(proc, "PROVIDES", []) or [])
+            for fld, layer in FIELD_LAYERS.items():
+                if layer in provides:
+                    owners[fld] = proc
+        return owners
 
-        Auto-adds missing dependencies. E.g. requesting ``["depparse"]``
-        auto-adds ``["tokenize", "pos", "depparse"]``.
-        """
-        from turkicnlp.resources.registry import ProcessorRegistry
+    # ------------------------------------------------------------------
+    # Running
 
-        needed: set[str] = set()
-        for proc_name in requested:
-            try:
-                proc_class = ProcessorRegistry.get_any(proc_name)
-                for req in proc_class.REQUIRES:
-                    needed.add(req)
-            except ValueError:
-                pass
-            needed.add(proc_name)
+    def _run_processor(self, proc: Processor, doc: Document) -> Document:
+        """Run one processor and keep only the fields it owns."""
+        owned = {f for f, o in self._owners.items() if o is proc}
+        foreign = {f for f, o in self._owners.items() if o is not proc}
+        if not foreign and not owned:
+            return proc.process(doc)
+        before = {
+            id(w): tuple(getattr(w, f) for f in _FIELDS) for w in doc.words
+        }
+        doc = proc.process(doc)
+        label = proc.NAME
+        for w in doc.words:
+            old = before.get(id(w))
+            written = {}
+            for i, f in enumerate(_FIELDS):
+                new = getattr(w, f)
+                if (old is None and new is not None) or (old is not None and new != old[i]):
+                    written[f] = new
+                    if f in foreign and old is not None:
+                        setattr(w, f, old[i])
+                    elif f in foreign:
+                        setattr(w, f, None)
+            if written:
+                w._provenance.setdefault(label, {}).update(written)
+        return doc
 
-        resolved = [p for p in PROCESSOR_ORDER if p in needed]
-        for proc_name in requested:
-            if proc_name in needed and proc_name not in resolved:
-                resolved.append(proc_name)
-        return resolved
+    def _reconcile_feats(self, doc: Document) -> None:
+        """Drop FEATS that belong to a different UPOS than the final one."""
+        feats_owner = self._owners.get("feats")
+        upos_owner = self._owners.get("upos")
+        if feats_owner is None or upos_owner is None or feats_owner is upos_owner:
+            return
+        for w in doc.words:
+            rec = w._provenance.get(feats_owner.NAME, {})
+            own_upos = rec.get("upos")
+            if own_upos is not None and w.upos is not None and own_upos != w.upos:
+                w._provenance.setdefault(feats_owner.NAME, {})["feats_dropped"] = w.feats
+                w.feats = None
+
+    def _bridge_for(self, script: Optional[Script]) -> Optional[Transliterator]:
+        """Transliterator from the input script to the model script, if needed."""
+        if self._transliterator is not None:
+            return self._transliterator
+        if script is None or script == self._model_script:
+            return None
+        if script not in self._script_config.available:
+            return None
+        try:
+            return Transliterator(self.lang, script, self._model_script)
+        except ValueError:
+            return None
 
     def __call__(self, text: str) -> Document:
         """Process a single text string.
@@ -291,34 +492,41 @@ class Pipeline:
 
         doc = Document(text=text, lang=self.lang)
 
+        input_script: Optional[Script]
         if self._explicit_script:
-            doc.script = str(self._script)
+            input_script = self._script
         else:
             try:
-                detected = detect_script(text)
-                doc.script = str(detected)
+                input_script = detect_script(text)
             except ValueError:
-                doc.script = str(self._script_config.primary)
+                input_script = None
+        if not text.strip():
+            doc.script = str(input_script or self._script or self._script_config.primary)
+            return doc
+
+        bridge = self._bridge_for(input_script)
+        if input_script is None:
+            input_script = self._script or self._model_script
+        doc.script = str(input_script)
 
         original_text = text
-        if self._transliterator:
-            transliterated = self._transliterator.transliterate(text)
+        if bridge is not None:
             doc._original_text = original_text
-            doc.text = transliterated
+            doc.text = bridge.transliterate(text)
+            doc.script = str(bridge.target)
 
         for processor in self._processors:
-            doc = processor.process(doc)
+            doc = self._run_processor(processor, doc)
+        self._reconcile_feats(doc)
 
-        if self._transliterate_back_enabled and self._transliterator:
-            reverse_translit = Transliterator(
-                self.lang, self._transliterator.target, self._transliterator.source
-            )
-            for sentence in doc.sentences:
-                for word in sentence.words:
-                    if word.lemma:
-                        word.lemma = reverse_translit.transliterate(word.lemma)
-            doc.text = original_text
-            doc.script = str(self._script or detect_script(original_text))
+        if bridge is not None:
+            try:
+                reverse = Transliterator(self.lang, bridge.target, bridge.source)
+            except ValueError:
+                reverse = None
+            if reverse is not None:
+                _restore_original(doc, original_text, reverse)
+                doc.script = str(bridge.source)
 
         return doc
 
@@ -383,14 +591,44 @@ class Pipeline:
     def batch(self, texts: list[str], batch_size: int = 32) -> list[Document]:
         """Process multiple texts.
 
+        Texts are processed in chunks of ``batch_size``; within a chunk every
+        processor gets all documents at once through
+        :meth:`Processor.process_batch`, which neural and LLM backends use to
+        batch their model calls.
+
         Args:
             texts: List of input strings.
-            batch_size: Batch size for neural processors.
+            batch_size: Number of documents handed to each processor at once.
 
         Returns:
             List of annotated documents.
         """
-        return [self(text) for text in texts]
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        if not self._processors:
+            self._build_processors()
+        out: list[Document] = []
+        for i in range(0, len(texts), batch_size):
+            chunk = texts[i:i + batch_size]
+            if self._transliterator is not None or not self._explicit_script:
+                # Script handling is per document.
+                out.extend(self(t) for t in chunk)
+                continue
+            docs = []
+            for t in chunk:
+                d = Document(text=t, lang=self.lang)
+                d.script = str(self._script)
+                docs.append(d)
+            work = [d for d in docs if d.text.strip()]
+            for proc in self._processors:
+                if self._owners:
+                    work = [self._run_processor(proc, d) for d in work]
+                else:
+                    work = proc.process_batch(work)
+            for d in work:
+                self._reconcile_feats(d)
+            out.extend(docs)
+        return out
 
     def process_file(
         self,
@@ -418,7 +656,7 @@ class Pipeline:
         elif output_format == "json":
             import json
 
-            result = json.dumps(doc.to_dict(), ensure_ascii=False, indent=2)
+            result = json.dumps(doc.to_dict(full=True), ensure_ascii=False, indent=2)
         else:
             raise ValueError(f"Unknown format: {output_format}")
 
@@ -450,5 +688,122 @@ class Pipeline:
         return info
 
     def __repr__(self) -> str:
-        procs = " -> ".join(self.processors)
-        return f"<Pipeline(lang={self.lang}, script={self._model_script}, processors=[{procs}])>"
+        if self._processors:
+            procs = " -> ".join(self.processors)
+            state = ""
+        else:
+            try:
+                procs = " -> ".join(f"{n}:{b}" for n, b in self._plan())
+            except Exception:  # noqa: BLE001 - repr must not fail
+                procs = "?"
+            state = ", not loaded yet"
+        return (
+            f"<Pipeline(lang={self.lang}, script={self._model_script}, "
+            f"processors=[{procs}]{state})>"
+        )
+
+
+def backend_key_missing(configs: dict, proc_name: str) -> bool:
+    """``True`` when the user did not choose a backend for ``proc_name``."""
+    return configs.get(f"{proc_name}_backend") is None
+
+
+def _restore_original(doc: Document, original: str, reverse: Transliterator) -> None:
+    """Map a document processed in the model script back to the input text.
+
+    Word and token texts become the matching substrings of ``original`` and
+    their offsets index ``original``; lemmas are transliterated back. Tokens
+    are located with a running cursor: first by searching the back-
+    transliterated token text, otherwise by aligning whitespace-separated
+    chunks of the two texts.
+    """
+    model_text = doc.text
+    doc._model_text = model_text  # type: ignore[attr-defined]
+
+    # Chunk alignment (whitespace runs are kept by every transliterator).
+    import re as _re
+
+    m_chunks = [(m.start(), m.end()) for m in _re.finditer(r"\S+", model_text)]
+    o_chunks = [(m.start(), m.end()) for m in _re.finditer(r"\S+", original)]
+    aligned = len(m_chunks) == len(o_chunks)
+
+    def chunk_map(start: int, end: int) -> tuple[Optional[int], Optional[int]]:
+        if not aligned:
+            return None, None
+        for (ms, me), (os_, oe) in zip(m_chunks, o_chunks):
+            if ms <= start < me:
+                s = os_ if start == ms else None
+                e = oe if end == me else None
+                if s is None or e is None:
+                    # Inside a chunk: proportional position.
+                    span_m = max(me - ms, 1)
+                    span_o = oe - os_
+                    if s is None:
+                        s = os_ + round((start - ms) * span_o / span_m)
+                    if e is None:
+                        e = os_ + round((end - ms) * span_o / span_m)
+                return s, max(e, s)
+        return None, None
+
+    low = original.lower()
+    cursor = 0
+
+    def locate(text: str, start: Optional[int], end: Optional[int]):
+        nonlocal cursor
+        back = reverse.transliterate(text) if text else text
+        if back:
+            pos = original.find(back, cursor)
+            if pos < 0:
+                pos = low.find(back.lower(), cursor)
+            if pos >= 0 and (start is None or pos - cursor < 40 + len(back) * 2):
+                cursor = pos + len(back)
+                return pos, pos + len(back)
+        if start is not None and end is not None:
+            s, e = chunk_map(start, end)
+            if s is not None:
+                cursor = max(cursor, e)
+                return s, e
+        return None, None
+
+    for sent in doc.sentences:
+        s_start = s_end = None
+        for tok in sent.tokens:
+            ts, te = locate(tok.text, tok.start_char, tok.end_char)
+            if ts is not None:
+                tok.text = original[ts:te]
+                tok.start_char, tok.end_char = ts, te
+                s_start = ts if s_start is None else s_start
+                s_end = te
+            else:
+                tok.text = reverse.transliterate(tok.text)
+            for w in tok.words:
+                if len(tok.words) == 1 and ts is not None:
+                    w.text = tok.text
+                    w.start_char, w.end_char = ts, te
+                else:
+                    w.text = reverse.transliterate(w.text)
+                    w.start_char, w.end_char = tok.start_char, tok.end_char
+        # words not covered by tokens (processors that only fill sentence.words)
+        if not sent.tokens:
+            for w in sent.words:
+                ws, we = locate(w.text, w.start_char, w.end_char)
+                if ws is not None:
+                    w.text = original[ws:we]
+                    w.start_char, w.end_char = ws, we
+                    s_start = ws if s_start is None else s_start
+                    s_end = we
+                else:
+                    w.text = reverse.transliterate(w.text)
+        for w in sent.words:
+            if w.lemma:
+                w.lemma = reverse.transliterate(w.lemma)
+        if s_start is not None:
+            sent.text = original[s_start:s_end]
+        else:
+            sent.text = reverse.transliterate(sent.text)
+        for ent in sent.entities:
+            if ent.words and ent.words[0].start_char is not None and ent.words[-1].end_char is not None:
+                ent.start_char = ent.words[0].start_char
+                ent.end_char = ent.words[-1].end_char
+                ent.text = original[ent.start_char:ent.end_char]
+    doc.text = original

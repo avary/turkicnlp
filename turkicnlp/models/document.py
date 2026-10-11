@@ -9,7 +9,12 @@ and write to this structure.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
+
+
+def _conllu_field(value: str) -> str:
+    """Make a value safe for one CoNLL-U column (no tabs or line breaks)."""
+    return " ".join(value.replace("\t", " ").splitlines()) if value else value
 
 
 @dataclass
@@ -53,7 +58,7 @@ class Word:
     def to_conllu_line(self) -> str:
         """Format as a single CoNLL-U line."""
         misc = self.misc or "_"
-        if self.script:
+        if self.script and "Script=" not in misc:
             if misc == "_":
                 misc = f"Script={self.script}"
             else:
@@ -61,8 +66,8 @@ class Word:
 
         fields = [
             str(self.id),
-            self.text,
-            self.lemma or "_",
+            _conllu_field(self.text) or "_",
+            _conllu_field(self.lemma or "") or "_",
             self.upos or "_",
             self.xpos or "_",
             self.feats or "_",
@@ -133,6 +138,8 @@ class Sentence:
         sentiment: Sentence-level sentiment label.
         embedding: Sentence-level dense vector representation.
         translation: Sentence-level machine translation output.
+        correction: Spelling-corrected sentence text (``spellcheck`` processor).
+        corrections: Changed words as ``(original, corrected)`` pairs.
     """
 
     text: str
@@ -142,6 +149,8 @@ class Sentence:
     sentiment: Optional[str] = None
     embedding: Optional[list[float]] = None
     translation: Optional[str] = None
+    correction: Optional[str] = None
+    corrections: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def dependencies(self) -> list[tuple[Optional[Word], str, Word]]:
@@ -155,11 +164,11 @@ class Sentence:
 
     def to_conllu(self) -> str:
         """Export sentence as a CoNLL-U block."""
-        lines = [f"# text = {self.text}"]
+        lines = [f"# text = {_conllu_field(self.text)}"]
         for token in self.tokens:
             if token.is_mwt:
                 lines.append(
-                    f"{token.id[0]}-{token.id[1]}\t{token.text}" + "\t_" * 8
+                    f"{token.id[0]}-{token.id[1]}\t{_conllu_field(token.text)}" + "\t_" * 8
                 )
             for word in token.words:
                 lines.append(word.to_conllu_line())
@@ -201,6 +210,13 @@ class Document:
         """All entities across sentences."""
         return [e for s in self.sentences for e in s.entities]
 
+    @property
+    def corrected_text(self) -> Optional[str]:
+        """Spelling-corrected text (``spellcheck`` processor), sentences joined by spaces."""
+        if not any(s.correction is not None for s in self.sentences):
+            return None
+        return " ".join(s.correction if s.correction is not None else s.text for s in self.sentences)
+
     def to_conllu(self) -> str:
         """Export entire document as CoNLL-U."""
         header: list[str] = []
@@ -213,21 +229,61 @@ class Document:
             return "\n".join(header) + "\n\n" + body + "\n\n"
         return body + "\n\n"
 
-    def to_dict(self) -> list[list[dict]]:
-        """Export as nested dicts for JSON serialization."""
-        return [
-            [
+    def to_dict(self, full: bool = False) -> Any:
+        """Export as nested dicts for JSON serialization.
+
+        Args:
+            full: ``False`` (default) returns one list of word dicts per
+                sentence. ``True`` returns a dict with document and sentence
+                level annotations as well (entities, sentiment, translation,
+                spelling corrections, embeddings excluded).
+        """
+        sentences = [[_word_dict(w) for w in s.words] for s in self.sentences]
+        if not full:
+            return sentences
+        return {
+            "text": self.text,
+            "lang": self.lang,
+            "script": self.script,
+            "translation": self.translation,
+            "corrected_text": self.corrected_text,
+            "sentences": [
                 {
-                    "id": w.id,
-                    "text": w.text,
-                    "lemma": w.lemma,
-                    "upos": w.upos,
-                    "xpos": w.xpos,
-                    "feats": w.feats,
-                    "head": w.head,
-                    "deprel": w.deprel,
+                    "text": s.text,
+                    "words": words,
+                    "tokens": [
+                        {"id": list(t.id), "text": t.text,
+                         "start_char": t.start_char, "end_char": t.end_char}
+                        for t in s.tokens
+                    ],
+                    "entities": [
+                        {"text": e.text, "type": e.type,
+                         "start_char": e.start_char, "end_char": e.end_char}
+                        for e in s.entities
+                    ],
+                    "sentiment": s.sentiment,
+                    "translation": s.translation,
+                    "correction": s.correction,
+                    "corrections": [list(c) for c in s.corrections],
                 }
-                for w in s.words
-            ]
-            for s in self.sentences
-        ]
+                for s, words in zip(self.sentences, sentences)
+            ],
+        }
+
+
+def _word_dict(w: Word) -> dict:
+    return {
+        "id": w.id,
+        "text": w.text,
+        "lemma": w.lemma,
+        "upos": w.upos,
+        "xpos": w.xpos,
+        "feats": w.feats,
+        "head": w.head,
+        "deprel": w.deprel,
+        "deps": w.deps,
+        "misc": w.misc,
+        "ner": w.ner,
+        "start_char": w.start_char,
+        "end_char": w.end_char,
+    }

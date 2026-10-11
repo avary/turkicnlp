@@ -1,0 +1,101 @@
+{
+ "version": 2,
+ "system": "You are an expert in the morphology of {language} ({script_name} script) and in Universal Dependencies (UD) annotation.\nYou receive the tokens of one sentence as a JSON list of [index, token] pairs. For every token give:\n- lemma: the dictionary form as in UD Turkic treebanks (verbs: the bare stem, e.g. Turkish \"git\", Kazakh \"бар\"; nouns: nominative singular);\n- upos: one of ADJ ADP ADV AUX CCONJ DET INTJ NOUN NUM PART PRON PROPN PUNCT SCONJ SYM VERB X;\n- feats: UD features as Name=Value pairs sorted alphabetically and joined with |, or _ if none. Use UD v2 names, e.g. Case, Number, Person, Number[psor], Person[psor], Tense, Aspect, Mood, Evident, Polarity, Voice, VerbForm, PronType.\nReturn JSON only: {\"words\": [{\"i\": <index>, \"token\": \"<the token, copied exactly>\", \"lemma\": \"...\", \"upos\": \"...\", \"feats\": \"...\"}]} with exactly one entry per given token, in order. Never split or merge tokens.",
+ "user": "Tokens: {tokens_json}",
+ "examples": {
+  "default": [
+   {
+    "vars": {
+     "tokens": [
+      "Мен",
+      "кеше",
+      "мектепке",
+      "бардым",
+      "."
+     ]
+    },
+    "answer": {
+     "words": [
+      {
+       "i": 0,
+       "token": "Мен",
+       "lemma": "мен",
+       "upos": "PRON",
+       "feats": "Case=Nom|Number=Sing|Person=1|PronType=Prs"
+      },
+      {
+       "i": 1,
+       "token": "кеше",
+       "lemma": "кеше",
+       "upos": "ADV",
+       "feats": "_"
+      },
+      {
+       "i": 2,
+       "token": "мектепке",
+       "lemma": "мектеп",
+       "upos": "NOUN",
+       "feats": "Case=Dat|Number=Sing"
+      },
+      {
+       "i": 3,
+       "token": "бардым",
+       "lemma": "бар",
+       "upos": "VERB",
+       "feats": "Mood=Ind|Number=Sing|Person=1|Polarity=Pos|Tense=Past|VerbForm=Fin"
+      },
+      {
+       "i": 4,
+       "token": ".",
+       "lemma": ".",
+       "upos": "PUNCT",
+       "feats": "_"
+      }
+     ]
+    }
+   },
+   {
+    "vars": {
+     "tokens": [
+      "Çocuklar",
+      "okula",
+      "gidiyorlar",
+      "."
+     ]
+    },
+    "answer": {
+     "words": [
+      {
+       "i": 0,
+       "token": "Çocuklar",
+       "lemma": "çocuk",
+       "upos": "NOUN",
+       "feats": "Case=Nom|Number=Plur"
+      },
+      {
+       "i": 1,
+       "token": "okula",
+       "lemma": "okul",
+       "upos": "NOUN",
+       "feats": "Case=Dat|Number=Sing"
+      },
+      {
+       "i": 2,
+       "token": "gidiyorlar",
+       "lemma": "git",
+       "upos": "VERB",
+       "feats": "Aspect=Prog|Mood=Ind|Number=Plur|Person=3|Polarity=Pos|Tense=Pres|VerbForm=Fin"
+      },
+      {
+       "i": 3,
+       "token": ".",
+       "lemma": ".",
+       "upos": "PUNCT",
+       "feats": "_"
+      }
+     ]
+    }
+   }
+  ]
+ }
+}

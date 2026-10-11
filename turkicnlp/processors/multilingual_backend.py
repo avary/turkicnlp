@@ -19,9 +19,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import urllib.request
+import threading
 from pathlib import Path
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
 import torch
 
@@ -78,8 +78,10 @@ def _ensure_checkpoint(base_dir: Path) -> Path:
         )
         dest_file.unlink()
     dest_dir.mkdir(parents=True, exist_ok=True)
-    print(f"  ↓ Downloading multilingual Glot500 checkpoint...")
-    urllib.request.urlretrieve(CHECKPOINT_URL, dest_file, reporthook=_progress_hook)
+    print("  ↓ Downloading multilingual Glot500 checkpoint...")
+    from turkicnlp.resources.downloader import _fetch
+
+    _fetch(CHECKPOINT_URL, dest_file, reporthook=_progress_hook)
     actual_sha = _sha256(dest_file)
     if actual_sha != CHECKPOINT_SHA256:
         dest_file.unlink()
@@ -90,16 +92,39 @@ def _ensure_checkpoint(base_dir: Path) -> Path:
     return dest_file
 
 
+_BACKBONE_WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin")
+_DOWNLOAD_LOCK = threading.Lock()
+
+
+def _backbone_complete(path: Path) -> bool:
+    return (path / "config.json").exists() and any(
+        (path / f).exists() for f in _BACKBONE_WEIGHT_FILES
+    )
+
+
 def _ensure_backbone(base_dir: Path) -> Path:
-    """Download the Glot500 backbone from HuggingFace if needed. Returns path."""
+    """Download the Glot500 backbone from HuggingFace if needed. Returns path.
+
+    The snapshot is stored as a plain model directory (``local_dir``) that the
+    models load directly with ``from_pretrained(<dir>)`` — no second download
+    into a hub cache, and loading works offline.  Shared by the parser and the
+    morph analyzer.
+    """
     shared_dir = base_dir / "huggingface" / BACKBONE_HF_NAME.replace("/", "--")
-    if (shared_dir / "config.json").exists():
-        return shared_dir
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
+    with _DOWNLOAD_LOCK:
+        if _backbone_complete(shared_dir):
+            return shared_dir
         try:
-            from transformers import AutoModel, AutoTokenizer
+            from huggingface_hub import snapshot_download
+        except ImportError:
+            try:
+                from transformers import AutoModel, AutoTokenizer
+            except ImportError:
+                raise ImportError(
+                    "Downloading the Glot500 backbone requires `transformers` "
+                    "or `huggingface_hub`. "
+                    "Install with: pip install turkicnlp[transformers]"
+                )
             print(f"  ↓ Downloading {BACKBONE_HF_NAME} backbone...")
             shared_dir.mkdir(parents=True, exist_ok=True)
             # Download and save directly into shared_dir (not as HF cache)
@@ -110,19 +135,13 @@ def _ensure_backbone(base_dir: Path) -> Path:
                 str(shared_dir)
             )
             return shared_dir
-        except ImportError:
-            raise ImportError(
-                "Downloading the Glot500 backbone requires `transformers` "
-                "or `huggingface_hub`. "
-                "Install with: pip install turkicnlp[transformers]"
-            )
-    print(f"  ↓ Downloading {BACKBONE_HF_NAME} backbone...")
-    shared_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_download(
-        repo_id=BACKBONE_HF_NAME,
-        local_dir=str(shared_dir),
-    )
-    return shared_dir
+        print(f"  ↓ Downloading {BACKBONE_HF_NAME} backbone...")
+        shared_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_download(
+            repo_id=BACKBONE_HF_NAME,
+            local_dir=str(shared_dir),
+        )
+        return shared_dir
 
 
 def _resolve_device(use_gpu: bool) -> torch.device:
@@ -149,11 +168,16 @@ class _MultilingualParserManager:
     """
 
     _models: ClassVar[dict[tuple, Any]] = {}
+    _lock: ClassVar[threading.RLock] = threading.RLock()
 
     @classmethod
     def clear(cls) -> None:
         """Clear all cached models (useful for testing)."""
-        cls._models.clear()
+        from turkicnlp.processors.multilingual_model import clear_backbone_cache
+
+        with cls._lock:
+            cls._models.clear()
+        clear_backbone_cache()
 
     @classmethod
     def ensure_downloaded(cls) -> tuple[Path, Path]:
@@ -176,24 +200,44 @@ class _MultilingualParserManager:
         """
         device = _resolve_device(use_gpu)
         key = (str(device),)
-        if key not in cls._models:
-            from turkicnlp.processors.multilingual_model import TurkicParser
+        with cls._lock:
+            if key not in cls._models:
+                cls._models[key] = cls._load(device)
+            return cls._models[key]
 
-            checkpoint_path, backbone_dir = cls.ensure_downloaded()
+    @classmethod
+    def _load(cls, device: torch.device) -> tuple[Any, torch.device]:
+        from turkicnlp.processors.multilingual_model import (
+            TurkicParser, load_trained_state, state_has_backbone,
+        )
 
-            logger.info("Loading multilingual TurkicParser on %s", device)
-            model = TurkicParser(hf_cache_dir=str(backbone_dir))
-            state = torch.load(
-                checkpoint_path, map_location=device, weights_only=False
+        checkpoint_path, backbone_dir = cls.ensure_downloaded()
+
+        logger.info("Loading multilingual TurkicParser on %s", device)
+        state = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        if "trained_state_dict" in state:
+            weights, strict = state["trained_state_dict"], False
+        elif "model_state_dict" in state:
+            weights, strict = state["model_state_dict"], True
+        else:
+            raise ValueError(
+                f"Checkpoint {checkpoint_path} has neither 'trained_state_dict' "
+                "nor 'model_state_dict'."
             )
-            if "trained_state_dict" in state:
-                model.load_state_dict(state["trained_state_dict"], strict=False)
-            elif "model_state_dict" in state:
-                model.load_state_dict(state["model_state_dict"])
-            model.to(device)
-            model.eval()
-            cls._models[key] = (model, device)
-        return cls._models[key]
+        # A checkpoint carrying its own backbone weights must not overwrite the
+        # backbone instance shared with the morph analyzer.
+        model = TurkicParser(
+            hf_cache_dir=str(backbone_dir),
+            device=device,
+            share_backbone=not state_has_backbone(weights),
+        )
+        if strict:
+            model.load_state_dict(weights)
+        else:
+            load_trained_state(model, weights, name="Glot500 parser")
+        model.to(device)
+        model.eval()
+        return model, device
 
     @classmethod
     def run(cls, doc: Document, use_gpu: bool = False) -> dict:
@@ -210,7 +254,7 @@ class _MultilingualParserManager:
 
         from turkicnlp.processors.multilingual_model import (
             resolve_lang, tokenize_words,
-            UPOS_TAGS, DEPREL_TAGS, LANG_ID_MAP,
+            UPOS_TAGS, LANG_ID_MAP,
         )
 
         model, device = cls.get_model(use_gpu)
@@ -247,18 +291,49 @@ class _MultilingualParserManager:
 
             n = len(words)
             pos_ids = pos_logits[0, :n].argmax(-1).tolist()
-            head_ids = arc_logits[0, :n].argmax(-1).tolist()
-            label_ids = [
-                label_logits[0, i, head_ids[i]].argmax(-1).item()
-                for i in range(n)
-            ]
+            head_ids, deprels = decode_parse(
+                arc_logits[0, :n, : n + 1], label_logits[0, :n, : n + 1]
+            )
 
             result["pos_tags"].append([UPOS_TAGS[p] for p in pos_ids])
             result["heads"].append(head_ids)
-            result["deprels"].append([DEPREL_TAGS[lid] for lid in label_ids])
+            result["deprels"].append(deprels)
 
         doc._multilingual_cache = result  # type: ignore[attr-defined]
         return result
+
+
+def decode_parse(
+    arc_logits: torch.Tensor, label_logits: torch.Tensor,
+) -> tuple[list[int], list[str]]:
+    """Decode heads and relations for one sentence.
+
+    Args:
+        arc_logits: ``[n, n + 1]`` head scores (column 0 = ROOT).
+        label_logits: ``[n, n + 1, NUM_DEPRELS]`` relation scores.
+
+    Returns:
+        ``(heads, deprels)``: a well-formed tree (no self-heads, no cycles,
+        exactly one root; see ``decode_tree``) and relations consistent with
+        it (``root`` exactly for the word attached to ROOT).
+    """
+    from turkicnlp.processors.multilingual_model import DEPREL_TAGS, decode_tree
+
+    n = arc_logits.size(0)
+    if n == 0:
+        return [], []
+    log_probs = torch.log_softmax(arc_logits.float(), dim=-1)
+    heads = decode_tree(log_probs)
+    root_id = DEPREL_TAGS.index("root")
+    deprels: list[str] = []
+    for i, h in enumerate(heads):
+        if h == 0:
+            deprels.append("root")
+            continue
+        scores = label_logits[i, h].clone()
+        scores[root_id] = float("-inf")
+        deprels.append(DEPREL_TAGS[int(scores.argmax(-1).item())])
+    return heads, deprels
 
 
 # ---------------------------------------------------------------------------

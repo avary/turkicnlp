@@ -1,21 +1,28 @@
-"""MorphemeTokenizer — hybrid neural + FST morpheme segmentation for Turkic languages.
+"""MorphemeTokenizer — hybrid rule-based morpheme segmentation for Turkic languages.
 
-Segments inflected Turkic words into surface morphemes:
+Segments inflected Turkic words into labelled surface morphemes:
 
     >>> tok = MorphemeTokenizer(lang="kaz")
     >>> tok.load()
-    >>> tok.segment("үйлеріңіздегілерден")
+    >>> tok.segment("үйлеріңіздегілерден").segments
     ['үй', 'лер', 'іңіз', 'де', 'гі', 'лер', 'ден']
 
-Architecture:
-    1. **Neural morph model** (primary) → lemma, UPOS, UD features
-    2. **HFST Apertium FST** (secondary) → fine-grained Apertium tags including
-       derivational morphology (<subst>, <caus>, etc.)
-    3. **Suffix allomorph tables** + phonological rules → surface morpheme boundaries
+Design (see :meth:`MorphemeTokenizer.segment`):
 
-The neural model handles OOV words and provides broad coverage (21 languages).
-The HFST backend enriches the analysis with derivational tags that UD features
-don't capture, enabling finer segmentation.
+1. **Analyses** come from the Apertium HFST transducer (lemma + ordered tags,
+   up to 12 readings) when it is installed for the language, and from the
+   multilingual Glot500 morph model (lemma, UPOS, UD features) when available.
+   Either backend alone is enough.
+2. **Segmentation is rule-based**: the lemma fixes the stem boundary; each tag
+   or UD feature is mapped to a suffix slot whose surface allomorph is found
+   with the per-language suffix tables (``resources/morpheme_rules.json``),
+   vowel-harmony / consonant-alternation rules and relaxed variant matching;
+   leftover material is segmented greedily.
+3. **Selection**: the Apertium reading that leaves the fewest unexplained
+   segments wins (ties broken by agreement with the neural POS/stem and the
+   transducer's ranking); the neural analysis is used when no transducer
+   reading explains the word as well.  Derivational suffixes are then split
+   off the stem when the remaining base is a word the transducer knows.
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from __future__ import annotations
 import json
 import os
 import logging
-import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -33,16 +40,27 @@ from turkicnlp.models.document import Document
 logger = logging.getLogger(__name__)
 
 
-def _turkic_lower(text: str) -> str:
+# Languages whose Latin alphabet pairs dotless I/ı with dotted İ/i (Turkish,
+# Azerbaijani, Crimean Tatar, Gagauz, Tatar Zamanälif, Kazakh 2021 Latin,
+# Ottoman transcription, Khalaj).  Uzbek, Turkmen and Karakalpak Latin have no
+# ı, so their capital I is an ordinary i.  Kept in sync with
+# ``multilingual_morph_model.DOTLESS_I_LANGS``.
+_DOTLESS_I_LANGS = frozenset({"tur", "aze", "crh", "gag", "tat", "kaz", "ota", "klj"})
+
+
+def _turkic_lower(text: str, lang: Optional[str] = None) -> str:
     """Lowercase with Turkic I/İ awareness.
 
-    Python's ``str.lower()`` maps ``I`` → ``i``, but in Turkish/Azerbaijani
-    ``I`` → ``ı`` and ``İ`` → ``i``.  This function handles both correctly.
+    ``İ`` → ``i`` always (Python's ``str.lower()`` would add a combining dot).
+    ``I`` → ``ı`` only for languages with a dotless ı in their alphabet
+    (:data:`_DOTLESS_I_LANGS`; also when *lang* is None, the Turkish
+    convention), otherwise ``I`` → ``i``.
     """
+    dotless = lang is None or lang in _DOTLESS_I_LANGS
     result = []
     for ch in text:
         if ch == "I":
-            result.append("ı")
+            result.append("ı" if dotless else "i")
         elif ch == "\u0130":  # İ
             result.append("i")
         else:
@@ -89,9 +107,11 @@ class _Phonology:
     """Phonological context for suffix allomorph selection."""
 
     __slots__ = ("back_vowels", "front_vowels", "vowels",
-                 "sonorants", "nasals", "voiced", "voiceless")
+                 "sonorants", "nasals", "voiced", "voiceless", "lang")
 
-    def __init__(self, script: str):
+    def __init__(self, script: str, lang: Optional[str] = None):
+        # language code, used for Turkic-aware lowercasing (dotless ı)
+        self.lang = lang
         if script == "Cyrl":
             self.back_vowels = _CY_BACK_V
             self.front_vowels = _CY_FRONT_V
@@ -186,16 +206,6 @@ def _char_class(ch: str, phon: _Phonology) -> str:
 #
 # To regenerate morpheme_rules.json from Wiktionary + manual tables, run:
 #   PYTHONPATH=. python scripts/extract_suffix_rules.py
-
-def _2way(conditions: list[tuple[str, str, str]]) -> list[tuple[str, tuple]]:
-    """Helper: 2-way harmony entries."""
-    return [(c, (b, f)) for c, b, f in conditions]
-
-
-def _4way(conditions: list[tuple[str, str, str, str, str]]) -> list[tuple[str, tuple]]:
-    """Helper: 4-way harmony entries."""
-    return [(c, (bu, fu, br, fr)) for c, bu, fu, br, fr in conditions]
-
 
 _MORPHEME_RULES_PATH = Path(__file__).resolve().parent.parent / "resources" / "morpheme_rules.json"
 _JSON_RULES_CACHE: dict | None = None
@@ -402,6 +412,8 @@ _UD_VERB_SUFFIX_ORDER: list[tuple[frozenset[str], str]] = [
     (frozenset({"Voice=Cau"}), "caus"),
     (frozenset({"Voice=Rcp"}), "coop"),
     # Compound neg+tense entries (must precede individual neg/tense)
+    # Aorist: UD writes it Aspect=Hab|Tense=Pres (older analyses: Tense=Aor)
+    (frozenset({"Polarity=Neg", "Aspect=Hab"}), "neg_aor"),
     (frozenset({"Polarity=Neg", "Tense=Pres"}), "neg_pres"),
     (frozenset({"Polarity=Neg", "Tense=Aor"}), "neg_aor"),
     (frozenset({"Polarity=Neg", "Aspect=Prog"}), "neg_prog"),
@@ -410,6 +422,7 @@ _UD_VERB_SUFFIX_ORDER: list[tuple[frozenset[str], str]] = [
     (frozenset({"VerbForm=Part"}), "prc_perf"),
     (frozenset({"VerbForm=Inf"}), "inf"),
     (frozenset({"VerbForm=Ger"}), "ger"),
+    (frozenset({"Aspect=Hab"}), "aor"),
     (frozenset({"Aspect=Prog"}), "prog"),
     (frozenset({"Tense=Past"}), "past"),
     (frozenset({"Tense=Pres"}), "pres"),
@@ -702,7 +715,7 @@ def _best_matching_allomorph(
 
     last_char = preceding[-1] if preceding else ""
     cc = _char_class(last_char, phon)
-    remaining_lower = _turkic_lower(remaining)
+    remaining_lower = _turkic_lower(remaining, phon.lang)
 
     candidates: list[str] = []
     for condition_str, forms in entries:
@@ -717,7 +730,7 @@ def _best_matching_allomorph(
             form = forms[idx]
         else:
             continue
-        if form and remaining_lower.startswith(_turkic_lower(form)):
+        if form and remaining_lower.startswith(_turkic_lower(form, phon.lang)):
             candidates.append(remaining[:len(form)])
 
     if candidates:
@@ -743,7 +756,7 @@ def _strip_infinitive(lemma: str, lang: str) -> str:
     - Siberian (sah, kjh, tyv, alt): -ар/-ер/-ыр/-ир (sometimes)
     - Chuvash: -ма/-ме
     """
-    ll = _turkic_lower(lemma)
+    ll = _turkic_lower(lemma, lang)
     # Try longest endings first
     _INF_SUFFIXES = [
         "maq", "mək", "mak", "mek", "moq",  # Oghuz, Karluk (Latin)
@@ -780,12 +793,11 @@ def _find_stem_boundary(
     4. Fallback: longest common prefix
     """
     # 0. Apostrophe boundary (Turkish proper nouns: İstanbul'da). In Uzbek
-    #    (o', g') and Karakalpak the apostrophe is part of a letter.
+    #    (o', g') and Karakalpak the apostrophe is part of a letter.  Suffixes
+    #    follow the LAST apostrophe: a name may contain one itself (Kur'an'ı).
     if lang in _APOSTROPHE_SUFFIX_LANGS:
-        apos_pos = surface.find("'")
-        if apos_pos == -1:
-            apos_pos = surface.find("\u2019")  # right single quote
-        if apos_pos > 0:
+        apos_pos = max(surface.rfind("'"), surface.rfind("\u2019"))
+        if 0 < apos_pos < len(surface) - 1:
             return apos_pos
 
     # 1. For verbs, strip infinitive ending to get bare stem
@@ -793,8 +805,8 @@ def _find_stem_boundary(
     if upos in ("VERB", "AUX") and not lemma_is_stem:
         lemma = _strip_infinitive(lemma, lang)
 
-    surface_lower = _turkic_lower(surface)
-    lemma_lower = _turkic_lower(lemma)
+    surface_lower = _turkic_lower(surface, lang)
+    lemma_lower = _turkic_lower(lemma, lang)
 
     # 1b. Handle negative verb lemmas: neural model sometimes returns the
     # negative form as the lemma (e.g., жазбай, білме, bilmir).
@@ -817,7 +829,7 @@ def _find_stem_boundary(
             if (lemma_lower.endswith(neg) and len(lemma_lower) > len(neg)
                     and surface_lower.startswith(lemma_lower[:len(lemma_lower) - len(neg)])):
                 lemma = lemma[:len(lemma) - len(neg)]
-                lemma_lower = _turkic_lower(lemma)
+                lemma_lower = _turkic_lower(lemma, lang)
                 break
 
     # 2. Exact prefix match
@@ -843,7 +855,7 @@ def _find_stem_boundary(
     alternations = _STEM_ALTERNATIONS.get(lang, {})
     if lemma_lower and lemma_lower[-1] in alternations:
         voiced_stem = lemma[:-1] + alternations[lemma_lower[-1]]
-        if surface_lower.startswith(_turkic_lower(voiced_stem)):
+        if surface_lower.startswith(_turkic_lower(voiced_stem, lang)):
             return len(voiced_stem)
 
     # 4. Longest common prefix
@@ -906,32 +918,6 @@ def _segment_by_tags(
     return morphemes
 
 
-def _greedy_match_one(
-    remaining: str,
-    preceding: str,
-    target_key: str,
-    suffix_table: dict,
-    phon: _Phonology,
-) -> Optional[str]:
-    """Try to match a specific suffix slot against the remaining string.
-
-    Tests all allomorphs for the given key and returns the longest match.
-    """
-    entries = suffix_table.get(target_key)
-    if not entries:
-        return None
-
-    candidates = []
-    for _, forms in entries:
-        for f in forms:
-            if f and _turkic_lower(remaining).startswith(_turkic_lower(f)):
-                candidates.append(remaining[:len(f)])
-
-    if candidates:
-        return max(candidates, key=len)
-    return None
-
-
 def _greedy_segment_remainder(
     remaining: str,
     preceding: str,
@@ -980,10 +966,11 @@ def _greedy_segment_remainder(
                     # Skip if match would leave a 1-char remainder
                     # UNLESS that char is a known word-final person suffix
                     if leftover_len == 1:
-                        leftover_ch = _turkic_lower(remaining[-1])
+                        leftover_ch = _turkic_lower(remaining[-1], phon.lang)
                         if leftover_ch not in _VALID_1CHAR:
                             continue
-                    if (_turkic_lower(remaining).startswith(_turkic_lower(f))
+                    if (_turkic_lower(remaining, phon.lang).startswith(
+                            _turkic_lower(f, phon.lang))
                             and f_len > len(best_match)):
                         best_match = remaining[:f_len]
                         best_key = key
@@ -1117,6 +1104,7 @@ _BUFFER_CONSONANTS: dict[str, tuple[str, ...]] = {
     "Arab": ("ي", "ن"),
 }
 _VARIANT_CACHE: dict[tuple[str, str], frozenset[str]] = {}
+_MAX_VARIANTS = 4096
 
 
 def _class_of(ch: str, classes: list[set[str]]) -> Optional[set[str]]:
@@ -1131,10 +1119,13 @@ def _form_variants(form: str, script: str, strict: bool = False) -> frozenset[st
 
     ``strict`` restricts consonant alternation to voicing pairs (used for
     derivational suffixes, where over-generation would split lexicalised stems).
+    Expansion stops at ``_MAX_VARIANTS`` alternants; such incomplete sets are
+    returned but not cached.
     """
     key = (form, script + ("/strict" if strict else ""))
-    if key in _VARIANT_CACHE:
-        return _VARIANT_CACHE[key]
+    cached = _VARIANT_CACHE.get(key)
+    if cached is not None:
+        return cached
     vcls = _VOWEL_CLASSES.get(script, _VOWEL_CLASSES["Cyrl"])
     ccls = (_STRICT_CONS_CLASSES if strict else _CONS_CLASSES).get(script, _CONS_CLASSES["Cyrl"])
     options: list[set[str]] = []
@@ -1145,12 +1136,15 @@ def _form_variants(form: str, script: str, strict: bool = False) -> frozenset[st
             alt = _class_of(lo, ccls)
         options.append(alt if alt else {lo})
     variants = {""}
+    complete = True
     for opt in options:
         variants = {v + o for v in variants for o in opt}
-        if len(variants) > 4096:  # safety for long forms
+        if len(variants) > _MAX_VARIANTS:  # safety for long forms
+            complete = False
             break
     result = frozenset(variants)
-    _VARIANT_CACHE[key] = result
+    if complete:
+        _VARIANT_CACHE[key] = result
     return result
 
 
@@ -1177,22 +1171,23 @@ def _match_key(
     (3) regular alternants of those forms, each optionally preceded by a buffer
     consonant after a vowel.  Returns the matched surface string or None.
     """
-    rem = _turkic_lower(remaining)
+    lang = phon.lang
+    rem = _turkic_lower(remaining, lang)
     exact = _best_matching_allomorph(key, remaining, preceding, suffix_table, phon)
     forms = _table_forms(key, suffix_table)
-    cands = [_turkic_lower(f) for f in forms if rem.startswith(_turkic_lower(f))]
+    cands = [_turkic_lower(f, lang) for f in forms if rem.startswith(_turkic_lower(f, lang))]
     if exact:
-        cands.append(_turkic_lower(exact))
+        cands.append(_turkic_lower(exact, lang))
     if not cands and relaxed:
         for f in forms:
-            for v in _form_variants(_turkic_lower(f), script):
+            for v in _form_variants(_turkic_lower(f, lang), script):
                 if v and rem.startswith(v):
                     cands.append(v)
-    if not cands and relaxed and preceding and preceding[-1:].lower() in phon.vowels:
+    if not cands and relaxed and preceding and _turkic_lower(preceding[-1:], lang) in phon.vowels:
         for b in _BUFFER_CONSONANTS.get(script, ()):
             if rem.startswith(b):
                 for f in forms:
-                    for v in _form_variants(_turkic_lower(f), script):
+                    for v in _form_variants(_turkic_lower(f, lang), script):
                         if v and rem[len(b):].startswith(v) and v[0] in phon.vowels:
                             cands.append(b + v)
     if not cands:
@@ -1286,12 +1281,18 @@ def _convert_suffix_table(table: dict, lang: str, src: str, tgt: str) -> Optiona
     }
 
 
-class MorphemeTokenizer:
-    """Hybrid neural + FST morpheme tokenizer for Turkic languages.
+_BASE_CACHE_SIZE = 100_000
 
-    Uses the neural morph model (Glot500 backbone) as the primary analyzer
-    for broad coverage (21 languages), and Apertium HFST as a secondary
-    backend for fine-grained derivational morphology.
+
+class MorphemeTokenizer:
+    """Hybrid rule-based morpheme tokenizer for Turkic languages.
+
+    Morphological analyses come from the Apertium HFST transducer (preferred
+    when installed for the language) and the multilingual Glot500 neural morph
+    model (fallback and tie-breaker); the actual morpheme boundaries are found
+    by rule: suffix allomorph tables plus vowel-harmony and consonant
+    alternation rules.  Works with either backend alone.  See the module
+    docstring and :meth:`segment` for the selection strategy.
 
     Usage::
 
@@ -1302,6 +1303,12 @@ class MorphemeTokenizer:
         # ['үй', 'лер', 'іңіз', 'де', 'гі', 'лер', 'ден']
         print(result.labeled)
         # [('үй', 'STEM'), ('лер', 'PLUR'), ('іңіз', 'POSS.2SG.FRM'), ...]
+
+    Args:
+        lang: ISO 639-3 code (one of :attr:`SUPPORTED_LANGS`).
+        use_gpu: Run the neural model on GPU if available.
+        script: Script of the input text (default: the language's primary script).
+        cache_size: Maximum number of cached word segmentations.
     """
 
     SUPPORTED_LANGS = list(_LANG_SUFFIX_MAP.keys())
@@ -1335,7 +1342,7 @@ class MorphemeTokenizer:
                 if converted is not None:
                     self._suffix_table, default_script = converted, primary
         self._script = script or default_script
-        self._phon = _Phonology(self._script)
+        self._phon = _Phonology(self._script, lang)
         self._noun_keys, self._verb_keys = _section_keys(lang)
 
         self._neural_available = False
@@ -1344,10 +1351,12 @@ class MorphemeTokenizer:
         self._loaded = False
         self._cache: dict[str, SegmentationResult] = {}
         self._cache_size = cache_size
-        self._base_cache: dict[tuple[str, bool], bool] = {}
+        # LRU of "is this a lexical base" transducer look-ups
+        self._base_cache: OrderedDict[tuple[str, bool], bool] = OrderedDict()
+        self._base_cache_size = _BASE_CACHE_SIZE
 
     def load(self) -> None:
-        """Load backends: neural morph model (primary) + HFST (secondary)."""
+        """Load the available backends (HFST transducer and/or neural morph model)."""
         # 1. Try loading neural morph model
         try:
             from turkicnlp.processors.multilingual_morph_backend import (
@@ -1410,7 +1419,8 @@ class MorphemeTokenizer:
            -lık/-çı/-sız/-lı, ...) are split off when the remaining base is a
            word the transducer knows.
 
-        Results are cached per word form.
+        Results are cached per word form.  Empty or whitespace-only input gives
+        a result with no morphemes.
 
         Args:
             word: A single inflected word form.
@@ -1418,6 +1428,8 @@ class MorphemeTokenizer:
         """
         if not self._loaded:
             raise RuntimeError("Call .load() before .segment()")
+        if not word or not word.strip():
+            return SegmentationResult(word=word, morphemes=[], source="skip")
         cached = self._cache.get(word)
         if cached is None:
             cached = self._segment_uncached(word)
@@ -1435,8 +1447,9 @@ class MorphemeTokenizer:
         self._base_cache.clear()
 
     def _segment_uncached(self, word: str) -> SegmentationResult:
+        word = word.strip()
         # Handle Tuvan/Sakha analytic verb forms (space-separated person pronouns)
-        if " " in word:
+        if " " in word.strip():
             parts = word.split()
             first_result = self._segment_uncached(parts[0])
             for part in parts[1:]:
@@ -1558,7 +1571,7 @@ class MorphemeTokenizer:
 
         morphemes = run(upos)
         if upos in ("NOUN", "ADJ") and len(morphemes) > 1:
-            ll = _turkic_lower(lemma)
+            ll = _turkic_lower(lemma, self.lang)
             is_verb_lemma = any(ll.endswith(x) for x in
                                 ("mak", "mek", "maq", "mək", "moq", "maa", "mää"))
             if _n_unknown(morphemes) > 0 or is_verb_lemma:
@@ -1571,13 +1584,15 @@ class MorphemeTokenizer:
     def _is_lexical_base(self, base: str, verb: bool) -> bool:
         """True if the transducer analyses *base* as a bare verb stem / noun or adjective."""
         key = (base, verb)
-        if key in self._base_cache:
-            return self._base_cache[key]
+        cached = self._base_cache.get(key)
+        if cached is not None:
+            self._base_cache.move_to_end(key)
+            return cached
         ok = False
         if self._hfst_available and self._hfst_analyzer is not None and len(base) >= 2:
             try:
                 for r in self._hfst_analyzer._analyze(base):
-                    if _turkic_lower(r.get("lemma", "")) != _turkic_lower(base):
+                    if _turkic_lower(r.get("lemma", ""), self.lang) != _turkic_lower(base, self.lang):
                         continue
                     pos = r.get("pos", "")
                     if (verb and pos == "v") or (not verb and pos in ("n", "adj")):
@@ -1586,6 +1601,8 @@ class MorphemeTokenizer:
             except Exception:  # noqa: BLE001
                 ok = False
         self._base_cache[key] = ok
+        if len(self._base_cache) > self._base_cache_size:
+            self._base_cache.popitem(last=False)
         return ok
 
     def _split_derivation(self, morphemes: list[Morpheme], upos: str) -> list[Morpheme]:
@@ -1602,11 +1619,11 @@ class MorphemeTokenizer:
         stem = morphemes[0].surface
         derived: list[Morpheme] = []
         for _ in range(2):
-            low = _turkic_lower(stem)
+            low = _turkic_lower(stem, self.lang)
             found = None
             for key in keys:
                 for f in _table_forms(key, self._suffix_table):
-                    for v in _form_variants(_turkic_lower(f), self._script, strict=True):
+                    for v in _form_variants(_turkic_lower(f, self.lang), self._script, strict=True):
                         if (len(v) >= 2 or key == "pass") and low.endswith(v) and len(low) - len(v) >= 2:
                             if found is None or len(v) > len(found[1]):
                                 if self._is_lexical_base(stem[:len(stem) - len(v)], is_verb):
@@ -1662,26 +1679,6 @@ class MorphemeTokenizer:
         return doc
 
     # --- Private helpers ---
-
-    def _try_hfst(self, word: str) -> Optional[dict]:
-        """Try HFST analysis, return best reading as {lemma, tags} or None."""
-        if not self._hfst_available or self._hfst_analyzer is None:
-            return None
-
-        try:
-            readings = self._hfst_analyzer._analyze(word)
-            if not readings:
-                return None
-
-            best = self._hfst_analyzer._disambiguate(readings)
-            lemma = best.get("lemma", "")
-            all_tags = [best.get("pos", "")] + best.get("feats", [])
-            # Filter to only morpheme-bearing tags
-            morph_tags = [t for t in all_tags if t not in _APT_SKIP_TAGS and t]
-            return {"lemma": lemma, "tags": morph_tags, "pos": best.get("pos", "")}
-        except Exception as e:
-            logger.debug("HFST analysis failed for '%s': %s", word, e)
-            return None
 
     def _try_neural(self, word: str) -> Optional[dict]:
         """Try neural morph analysis, return {lemma, upos, feats} or None."""
@@ -1742,10 +1739,8 @@ class MorphemeTokenizer:
 
             edit_id = edit_logits[0, 0].argmax(-1).item()
             edit_str = edit_vocab.decode(edit_id)
-            if edit_str == "<unk>":
-                lemma = word.lower()
-            else:
-                lemma = apply_edit_script(word, edit_str)
+            # lowercase (Turkic-aware) lemma; <unk> falls back to identity
+            lemma = apply_edit_script(word, "0" if edit_str == "<unk>" else edit_str, self.lang)
 
             return {"lemma": lemma, "upos": upos, "feats": feats}
         except Exception as e:

@@ -1,0 +1,76 @@
+{
+ "version": 1,
+ "system": "You are an expert annotator of named entities in {language} texts ({script_name} script).\nYou receive the tokens of one sentence as a JSON list of [index, token] pairs.\nMark every named entity with one of these labels: {labels}.\n{label_guide}\nAn entity can span several tokens. Case and possessive suffixes attached to a name are part of its token (e.g. Turkish \"Ankara'ya\", Kazakh \"Астанада\"), so the token is part of the entity.\nReturn JSON only: {\"entities\": [{\"start\": <index of the first token>, \"end\": <index of the last token + 1>, \"label\": \"<LABEL>\"}]}\nReturn {\"entities\": []} if the sentence has no named entities.",
+ "user": "Tokens: {tokens_json}",
+ "examples": {
+  "default": [
+   {
+    "vars": {
+     "tokens": [
+      "Mustafa",
+      "Kemal",
+      "Atatürk",
+      "1919'da",
+      "Samsun'a",
+      "çıktı",
+      "."
+     ]
+    },
+    "answer": {
+     "entities": [
+      {
+       "start": 0,
+       "end": 3,
+       "label": "PER"
+      },
+      {
+       "start": 4,
+       "end": 5,
+       "label": "LOC"
+      }
+     ]
+    }
+   },
+   {
+    "vars": {
+     "tokens": [
+      "Назарбаев",
+      "Университеті",
+      "Астанада",
+      "орналасқан",
+      "."
+     ]
+    },
+    "answer": {
+     "entities": [
+      {
+       "start": 0,
+       "end": 2,
+       "label": "ORG"
+      },
+      {
+       "start": 2,
+       "end": 3,
+       "label": "LOC"
+      }
+     ]
+    }
+   },
+   {
+    "vars": {
+     "tokens": [
+      "Bugun",
+      "havo",
+      "juda",
+      "issiq",
+      "bo‘ldi",
+      "."
+     ]
+    },
+    "answer": {
+     "entities": []
+    }
+   }
+  ]
+ }
+}

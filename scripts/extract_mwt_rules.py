@@ -8,9 +8,9 @@ rules into resources/mwt_rules_extracted/{lang}.json.
 
 from __future__ import annotations
 
-import io
 import json
 import tarfile
+import unicodedata
 import zipfile
 from collections import Counter
 from pathlib import Path
@@ -50,6 +50,26 @@ UD_ALLZIP_URL = (
 UD_VERSION = "v2.17"
 UD_ZIP_NAME = f"ud-{UD_VERSION}-allzip.zip"
 UD_TGZ_NAME = f"ud-treebanks-{UD_VERSION}.tgz"
+
+
+def _norm(text: str) -> str:
+    """Case-insensitive comparison key (Turkish I/İ aware, kashida-free)."""
+    text = unicodedata.normalize("NFC", text).replace("\u0640", "")
+    text = text.replace("İ", "i").replace("I", "ı")
+    text = unicodedata.normalize("NFD", text.lower()).replace("\u0307", "")
+    return unicodedata.normalize("NFC", text)
+
+
+def is_valid_split(surface: str, pieces: list[str] | tuple[str, ...]) -> bool:
+    """Return True when ``pieces`` concatenate back to ``surface``.
+
+    UD word forms of an MWT are often lemma-like or normalised (e.g.
+    ``SONRAKİ -> SONRAKİ + Kİ`` or ``doğrudur -> doğru + dır``), which makes
+    them useless as surface segmentation rules.  Only splits whose parts
+    reconstruct the surface (case-insensitively) are kept.
+    """
+    pieces = [p for p in pieces if p and p != "_"]
+    return len(pieces) >= 2 and _norm("".join(pieces)) == _norm(surface)
 
 
 def _download_ud_allzip(cache_dir: Path) -> Path:
@@ -147,7 +167,12 @@ def main() -> int:
             rules.update(_extract_rules_from_conllu(conllu_text))
 
         by_surface: dict[str, Counter] = {}
+        skipped = 0
         for (surface, pieces), count in rules.items():
+            pieces = tuple(p for p in pieces if p != "_")
+            if not is_valid_split(surface, pieces):
+                skipped += 1
+                continue
             by_surface.setdefault(surface, Counter())[pieces] += count
 
         rule_list = []
@@ -162,7 +187,7 @@ def main() -> int:
             )
         out_path = out_dir / f"{lang}.json"
         out_path.write_text(json.dumps({"rules": rule_list}, indent=2, ensure_ascii=True) + "\n")
-        print(f"[ok] {lang}: {len(rule_list)} rules")
+        print(f"[ok] {lang}: {len(rule_list)} rules ({skipped} invalid splits skipped)")
 
     return 0
 

@@ -6,7 +6,6 @@ Wraps the GlotLID FastText model with optional label filtering.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Iterable, Optional
 
 import numpy as np
@@ -23,6 +22,16 @@ _LANG_CODE_OVERRIDES: dict[str, str] = {
     "uzb": "uzn",  # Uzbek (Latn) in GlotLID is labeled as uzn_Latn
     "aze": "azj",  # North Azerbaijani in GlotLID is labeled as azj_Latn / azj_Cyrl
 }
+
+
+# fastText's predict()/get_sentence_vector() reject text containing "\n";
+# all line/paragraph separators are mapped to plain spaces first.
+_LINE_BREAKS = str.maketrans({c: " " for c in "\n\r\v\f\x85\u2028\u2029"})
+
+
+def _single_line(text: str) -> str:
+    """Return *text* with every line break replaced by a space."""
+    return text.translate(_LINE_BREAKS)
 
 
 def glotlid_label_for(lang: str, script: str) -> str:
@@ -132,7 +141,7 @@ class LanguageDetection:
         )
 
     def _predict_limit_before_softmax(self, text: str, k: int = 1) -> tuple[tuple[str, ...], np.ndarray]:
-        sentence_vector = self.model.get_sentence_vector(text)
+        sentence_vector = self.model.get_sentence_vector(_single_line(text))
         result_vector = np.dot(self.output_matrix[self.language_indices, :], sentence_vector)
         softmax_result = np.exp(result_vector - np.max(result_vector))
         softmax_result = softmax_result / np.sum(softmax_result)
@@ -143,7 +152,7 @@ class LanguageDetection:
         return top_k_labels, top_k_probs
 
     def _predict_limit_after_softmax(self, text: str, k: int = 1) -> tuple[tuple[str, ...], np.ndarray]:
-        sentence_vector = self.model.get_sentence_vector(text)
+        sentence_vector = self.model.get_sentence_vector(_single_line(text))
         result_vector = np.dot(self.output_matrix, sentence_vector)
         softmax_result = np.exp(result_vector - np.max(result_vector))
         softmax_result = softmax_result / np.sum(softmax_result)

@@ -6,7 +6,6 @@ import pytest
 
 from turkicnlp.scripts import (
     Script,
-    ScriptConfig,
     LANGUAGE_SCRIPTS,
     get_script_config,
 )

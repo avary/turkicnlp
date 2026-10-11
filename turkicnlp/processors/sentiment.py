@@ -7,7 +7,6 @@ classification (positive / negative / neutral).
 
 from __future__ import annotations
 
-from typing import Optional
 
 from turkicnlp.models.document import Document
 from turkicnlp.processors.base import Processor
@@ -19,6 +18,7 @@ class SentimentProcessor(Processor):
     Assigns a sentiment label to each sentence in the document.
     """
 
+    IMPLEMENTED = False  # placeholder, see ROADMAP.md
     NAME = "sentiment"
     PROVIDES = ["sentiment"]
     REQUIRES = ["tokenize"]

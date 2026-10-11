@@ -29,8 +29,16 @@ def parse_conllu(text: str) -> Document:
     pending_mwt: Optional[Token] = None
     current_text: Optional[str] = None
 
+    def _close_mwt() -> None:
+        nonlocal pending_mwt
+        if pending_mwt is not None:
+            if pending_mwt.words:
+                current_tokens.append(pending_mwt)
+            pending_mwt = None
+
     def _flush_sentence() -> None:
         nonlocal current_words, current_tokens, current_text
+        _close_mwt()  # an unclosed range must not leak into the next sentence
         if not current_words and not current_tokens:
             return
         sent_text = current_text or " ".join(w.text for w in current_words)
@@ -40,6 +48,8 @@ def parse_conllu(text: str) -> Document:
         current_tokens = []
         current_text = None
 
+    if text.startswith("\ufeff"):
+        text = text[1:]
     for line in text.splitlines():
         line = line.rstrip("\n")
         if not line:
@@ -62,6 +72,7 @@ def parse_conllu(text: str) -> Document:
         if "-" in tok_id:
             try:
                 start, end = tok_id.split("-", 1)
+                _close_mwt()
                 pending_mwt = Token(id=(int(start), int(end)), text=fields[1])
             except ValueError:
                 continue
@@ -77,10 +88,21 @@ def parse_conllu(text: str) -> Document:
         misc = fields[9] if fields[9] != "_" else None
         script = None
         if misc:
+            # Script= goes to Word.script (written back by to_conllu_line).
+            rest = []
             for part in misc.split("|"):
-                if part.startswith("Script="):
+                if part.startswith("Script=") and script is None:
                     script = part.split("=", 1)[1]
-                    break
+                else:
+                    rest.append(part)
+            misc = "|".join(rest) or None
+
+        head: Optional[int] = None
+        if fields[6] != "_":
+            try:
+                head = int(fields[6])
+            except ValueError:
+                head = None
 
         word = Word(
             id=wid,
@@ -89,13 +111,15 @@ def parse_conllu(text: str) -> Document:
             upos=None if fields[3] == "_" else fields[3],
             xpos=None if fields[4] == "_" else fields[4],
             feats=None if fields[5] == "_" else fields[5],
-            head=None if fields[6] == "_" else int(fields[6]),
+            head=head,
             deprel=None if fields[7] == "_" else fields[7],
             deps=None if fields[8] == "_" else fields[8],
             misc=misc,
             script=script,
         )
 
+        if pending_mwt and not (pending_mwt.id[0] <= wid <= pending_mwt.id[1]):
+            _close_mwt()
         if pending_mwt and pending_mwt.id[0] <= wid <= pending_mwt.id[1]:
             pending_mwt.words.append(word)
             if wid == pending_mwt.id[1]:

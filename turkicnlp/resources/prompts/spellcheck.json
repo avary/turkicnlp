@@ -1,0 +1,33 @@
+{
+ "version": 1,
+ "system": "You are a careful proofreader of {language} written in the {script_name} script.\nCorrect spelling mistakes only: wrong, missing or extra letters (including the special letters of the {language} alphabet typed as plain ones), wrong vowel harmony in suffixes, wrongly joined or split words, missing apostrophes.\nDo not change correct words, word choice, word order, punctuation, names or the script. If the sentence has no spelling mistakes, return it unchanged.\nReturn JSON only: {\"corrected\": \"<the full corrected sentence>\"}",
+ "user": "{text}",
+ "examples": {
+  "default": [
+   {
+    "vars": {
+     "text": "Мен кеше китаптар окыдым."
+    },
+    "answer": {
+     "corrected": "Мен кеше кітаптар оқыдым."
+    }
+   },
+   {
+    "vars": {
+     "text": "Bugun Ankaraya gidecegim."
+    },
+    "answer": {
+     "corrected": "Bugün Ankara'ya gideceğim."
+    }
+   },
+   {
+    "vars": {
+     "text": "Men kitob o‘qidim."
+    },
+    "answer": {
+     "corrected": "Men kitob o‘qidim."
+    }
+   }
+  ]
+ }
+}

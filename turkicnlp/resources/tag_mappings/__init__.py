@@ -19,8 +19,6 @@ def load_tag_map(lang: str) -> TagMapper:
     Returns:
         A :class:`TagMapper` instance for the language.
 
-    Raises:
-        ValueError: If no tag mapping exists for the language.
     """
     if lang == "kaz":
         from turkicnlp.resources.tag_mappings.kaz import KazakhTagMapper
@@ -86,4 +84,6 @@ def load_tag_map(lang: str) -> TagMapper:
         from turkicnlp.resources.tag_mappings.uzb import UzbekTagMapper
         return UzbekTagMapper()
     else:
-        return TagMapper()
+        # Other Turkic languages (ota, otk, klj, ...) share the common mapping.
+        from turkicnlp.resources.tag_mappings.turkic_common import CommonTurkicTagMapper
+        return CommonTurkicTagMapper()

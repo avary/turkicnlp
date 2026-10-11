@@ -7,7 +7,6 @@ Provides :class:`DictionaryLemmatizer` (lookup-based) and
 
 from __future__ import annotations
 
-from typing import Optional
 
 from turkicnlp.models.document import Document
 from turkicnlp.processors.base import Processor
@@ -19,6 +18,7 @@ class DictionaryLemmatizer(Processor):
     Falls back to identity (surface form = lemma) for unknown words.
     """
 
+    IMPLEMENTED = False  # placeholder, see ROADMAP.md
     NAME = "lemma"
     PROVIDES = ["lemma"]
     REQUIRES = ["tokenize", "pos"]
@@ -47,6 +47,7 @@ class NeuralLemmatizer(Processor):
     form and UPOS tag.
     """
 
+    IMPLEMENTED = False  # placeholder, see ROADMAP.md
     NAME = "lemma"
     PROVIDES = ["lemma"]
     REQUIRES = ["tokenize", "pos"]

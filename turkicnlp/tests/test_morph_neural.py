@@ -1,6 +1,5 @@
 """Tests for the multilingual neural morphological analyzer backend."""
 
-import pytest
 
 
 class TestMorphModelImports:
@@ -8,13 +7,6 @@ class TestMorphModelImports:
 
     def test_import_morph_model(self):
         from turkicnlp.processors.multilingual_morph_model import (
-            TurkicMorphAnalyzer,
-            MorphFeatureHead,
-            LemmaHead,
-            CharCNN,
-            EditScriptVocab,
-            encode_chars,
-            apply_edit_script,
             UD_MORPH_FEATS,
             NUM_MORPH_FEATS,
             SUPPORTED_LANGS,
@@ -28,7 +20,6 @@ class TestMorphModelImports:
             MultilingualMorphAnalyzer,
             MultilingualMorphFeats,
             MultilingualMorphLemmatizer,
-            _MorphAnalyzerManager,
         )
         assert MultilingualMorphAnalyzer.NAME == "morph_neural"
         assert MultilingualMorphFeats.NAME == "feats"

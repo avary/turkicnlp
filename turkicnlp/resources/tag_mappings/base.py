@@ -4,6 +4,8 @@ Base class for Apertium → UD tag mapping.
 
 from __future__ import annotations
 
+from typing import Optional
+
 
 # Default Apertium POS → UD UPOS mapping (shared across languages)
 DEFAULT_POS_MAP: dict[str, str] = {
@@ -55,16 +57,17 @@ class TagMapper:
         """
         return self.POS_MAP.get(apertium_pos, "X")
 
-    def to_ud_feats(self, apertium_feats: list[str]) -> str:
+    def to_ud_feats(self, apertium_feats: list[str], pos: Optional[str] = None) -> str:
         """Convert a list of Apertium feature tags to a UD feature string.
 
         Args:
             apertium_feats: List of Apertium tags (e.g. ``["dat", "sg"]``).
+            pos: Apertium POS of the reading, for tags whose meaning depends on it.
 
         Returns:
             UD-format feature string (e.g. ``Case=Dat|Number=Sing``).
         """
-        ud_feats, _ = self.map_ud_feats(apertium_feats)
+        ud_feats, _ = self.map_ud_feats(apertium_feats, pos=pos)
         # Mapped values may bundle several features ("Tense=Past|VerbForm=Part").
         # Flatten, keep the first value per feature name, and sort like UD does.
         merged: dict[str, str] = {}
@@ -77,7 +80,9 @@ class TagMapper:
             return "_"
         return "|".join(f"{k}={merged[k]}" for k in sorted(merged, key=str.lower))
 
-    def map_ud_feats(self, apertium_feats: list[str]) -> tuple[list[str], list[str]]:
+    def map_ud_feats(
+        self, apertium_feats: list[str], pos: Optional[str] = None
+    ) -> tuple[list[str], list[str]]:
         """Map Apertium features to UD and report unknown tags.
 
         Args:

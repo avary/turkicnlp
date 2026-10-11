@@ -11,7 +11,10 @@ Install with: ``pip install turkicnlp[stanza]``
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import threading
+from pathlib import Path
 from typing import Any, ClassVar, Optional
 
 from turkicnlp.models.document import Document, Sentence, Span, Token, Word
@@ -30,11 +33,11 @@ _LANG_MAP: dict[str, str] = {
     "uig": "ug",   # UD treebank: UDT
     "kir": "ky",   # UD treebank: KTMU
     "ota": "ota",  # UD treebank: BOUN
-    "aze": "az",   # Custom-trained on TuECL (turkic-nlp/trained-stanza-models)
-    "uzb": "uz",   # Custom-trained on UzUDT (turkic-nlp/trained-stanza-models)
-    "tuk": "tk",   # Custom-trained on TuECL (turkic-nlp/trained-stanza-models)
-    "tat": "tt",   # Custom-trained on NMCTT (turkic-nlp/trained-stanza-models)
-    "bak": "ba",   # Custom-trained on TUD (turkic-nlp/trained-stanza-models)
+    "aze": "az",   # Custom-trained (training data: README, "Stanza/UD Model Details")
+    "uzb": "uz",   # Custom-trained (training data: README, "Stanza/UD Model Details")
+    "tuk": "tk",   # Custom-trained (training data: README, "Stanza/UD Model Details")
+    "tat": "tt",   # Custom-trained (training data: README, "Stanza/UD Model Details")
+    "bak": "ba",   # Custom-trained (training data: README, "Stanza/UD Model Details")
 }
 
 # Languages with custom-trained Stanza models (not from official Stanza hub).
@@ -94,13 +97,12 @@ def _is_custom_stanza(lang: str) -> bool:
     return lang in _CUSTOM_STANZA_LANGS
 
 
-def _get_custom_model_dir(lang: str) -> "Path":
+def _get_custom_model_dir(lang: str) -> Path:
     """Return the directory containing custom Stanza model files.
 
     Uses ISO 639-3 code (e.g. ``uzb``) as directory name, consistent
     with the rest of the library.
     """
-    from pathlib import Path
     return ModelRegistry.default_dir() / "stanza_custom" / lang
 
 
@@ -169,6 +171,17 @@ def download_stanza_model(lang: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+@contextlib.contextmanager
+def _keep_stanza_log_level():
+    """Restore the ``stanza`` logger level that ``stanza.Pipeline`` changes."""
+    stanza_logger = logging.getLogger("stanza")
+    previous = stanza_logger.level
+    try:
+        yield
+    finally:
+        stanza_logger.setLevel(previous)
+
+
 class _StanzaManager:
     """Manages shared Stanza pipeline instances and per-document caching.
 
@@ -184,6 +197,7 @@ class _StanzaManager:
       tokenizer. Stanza runs POS/lemma/depparse on the given tokens.
     """
 
+    _lock: ClassVar[threading.RLock] = threading.RLock()
     _full_pipelines: ClassVar[dict[tuple, Any]] = {}
     _pretok_pipelines: ClassVar[dict[tuple, Any]] = {}
     _full_ner_pipelines: ClassVar[dict[tuple, Any]] = {}
@@ -199,6 +213,11 @@ class _StanzaManager:
 
     @classmethod
     def get_full_pipeline(cls, lang: str, use_gpu: bool = False) -> Any:
+        with cls._lock, _keep_stanza_log_level():
+            return cls._get_full_pipeline(lang, use_gpu)
+
+    @classmethod
+    def _get_full_pipeline(cls, lang: str, use_gpu: bool = False) -> Any:
         """Get or create a full Stanza pipeline (with neural tokenization).
 
         Uses Stanza's default processor set for the language, which typically
@@ -224,7 +243,6 @@ class _StanzaManager:
                     logging_level="ERROR",
                     **kwargs,
                 )
-                logging.getLogger("stanza").setLevel(logging.WARNING)
             else:
                 stanza_dir = ModelRegistry.default_dir() / "stanza"
                 try:
@@ -252,6 +270,11 @@ class _StanzaManager:
 
     @classmethod
     def get_pretokenized_pipeline(cls, lang: str, use_gpu: bool = False) -> Any:
+        with cls._lock, _keep_stanza_log_level():
+            return cls._get_pretokenized_pipeline(lang, use_gpu)
+
+    @classmethod
+    def _get_pretokenized_pipeline(cls, lang: str, use_gpu: bool = False) -> Any:
         """Get or create a pretokenized Stanza pipeline.
 
         Runs POS tagging, lemmatization, and dependency parsing on
@@ -276,7 +299,6 @@ class _StanzaManager:
                     logging_level="ERROR",
                     **kwargs,
                 )
-                logging.getLogger("stanza").setLevel(logging.WARNING)
             else:
                 stanza_dir = ModelRegistry.default_dir() / "stanza"
                 try:
@@ -310,6 +332,11 @@ class _StanzaManager:
 
     @classmethod
     def get_full_ner_pipeline(cls, lang: str, use_gpu: bool = False) -> Any:
+        with cls._lock, _keep_stanza_log_level():
+            return cls._get_full_ner_pipeline(lang, use_gpu)
+
+    @classmethod
+    def _get_full_ner_pipeline(cls, lang: str, use_gpu: bool = False) -> Any:
         """Get or create a full Stanza pipeline for NER."""
         if _is_custom_stanza(lang):
             raise ValueError(
@@ -348,6 +375,11 @@ class _StanzaManager:
 
     @classmethod
     def get_pretokenized_ner_pipeline(cls, lang: str, use_gpu: bool = False) -> Any:
+        with cls._lock, _keep_stanza_log_level():
+            return cls._get_pretokenized_ner_pipeline(lang, use_gpu)
+
+    @classmethod
+    def _get_pretokenized_ner_pipeline(cls, lang: str, use_gpu: bool = False) -> Any:
         """Get or create a pretokenized Stanza pipeline for NER."""
         if _is_custom_stanza(lang):
             raise ValueError(
@@ -429,7 +461,7 @@ class _StanzaManager:
         if cached is not None:
             return cached
         pipeline = cls.get_pretokenized_ner_pipeline(doc.lang, use_gpu)
-        tokens = [[w.text for w in sent.words] for sent in doc.sentences]
+        tokens = [_ner_units(sent) for sent in doc.sentences]
         result = pipeline(tokens)
         doc._stanza_pretok_ner_cache = result  # type: ignore[attr-defined]
         return result
@@ -449,11 +481,20 @@ def _run_stanza(doc: Document, use_gpu: bool = False) -> Any:
 
 
 def _run_stanza_ner(doc: Document, use_gpu: bool = False) -> Any:
-    """Run Stanza NER in full or pretokenized mode based on provenance."""
-    if "tokenize:stanza" in doc._processor_log:
-        return _StanzaManager.run_full_ner(doc, use_gpu)
-    else:
-        return _StanzaManager.run_pretokenized_ner(doc, use_gpu)
+    """Run Stanza NER on the document's own tokens (pretokenized mode).
+
+    NER always runs on the toolkit's tokens, whichever tokenizer produced
+    them, so Stanza's sentences and tokens correspond one to one to the
+    document's sentences and tokens.
+    """
+    return _StanzaManager.run_pretokenized_ner(doc, use_gpu)
+
+
+def _ner_units(sent) -> list[str]:
+    """Surface tokens of a sentence (multi-word tokens unsplit) for NER."""
+    if sent.tokens:
+        return [t.text for t in sent.tokens]
+    return [w.text for w in sent.words]
 
 
 def _bioes_to_bio(tag: Optional[str]) -> str:
@@ -718,23 +759,39 @@ class StanzaNERProcessor(Processor):
         self.check_requirements(doc)
         stanza_doc = _run_stanza_ner(doc, self._use_gpu)
 
-        for sent, stanza_sent in zip(doc.sentences, stanza_doc.sentences):
+        stanza_sents = list(stanza_doc.sentences)
+        if len(stanza_sents) != len(doc.sentences):
+            logger.warning(
+                "Stanza NER returned %d sentences for %d; NER tags left empty.",
+                len(stanza_sents), len(doc.sentences),
+            )
+            stanza_sents = []
+        for i, sent in enumerate(doc.sentences):
+            units = _ner_units(sent)
+            unit_tags = ["O"] * len(units)
+            if stanza_sents:
+                stanza_tokens = list(stanza_sents[i].tokens)
+                if len(stanza_tokens) == len(units):
+                    unit_tags = [
+                        _bioes_to_bio(getattr(t, "ner", None)) for t in stanza_tokens
+                    ]
+                else:
+                    logger.warning(
+                        "Stanza NER token count differs in sentence %d (%d vs %d); "
+                        "tags set to O.", i, len(stanza_tokens), len(units),
+                    )
             tags: list[str] = []
-            for stanza_token in stanza_sent.tokens:
-                tag = _bioes_to_bio(getattr(stanza_token, "ner", None))
-                if len(stanza_token.words) > 1:
+            if sent.tokens:
+                for token, tag in zip(sent.tokens, unit_tags):
+                    n = max(len(token.words), 1)
                     if tag.startswith("B-"):
                         tags.append(tag)
-                        tags.extend(f"I-{tag[2:]}" for _ in stanza_token.words[1:])
+                        tags.extend(f"I-{tag[2:]}" for _ in range(n - 1))
                     else:
-                        tags.extend([tag] * len(stanza_token.words))
-                else:
-                    tags.append(tag)
-
-            tags = tags[: len(sent.words)]
-            if len(tags) < len(sent.words):
-                tags.extend(["O"] * (len(sent.words) - len(tags)))
-
+                        tags.extend([tag] * n)
+            else:
+                tags = unit_tags
+            tags = (tags + ["O"] * len(sent.words))[: len(sent.words)]
             for word, tag in zip(sent.words, tags):
                 word.ner = tag
             sent.entities = _bio_to_spans(sent.words, tags)

@@ -7,7 +7,6 @@ Provides :class:`BiaffineDepParser` implementing biaffine attention
 
 from __future__ import annotations
 
-from typing import Optional
 
 from turkicnlp.models.document import Document
 from turkicnlp.processors.base import Processor
@@ -19,6 +18,7 @@ class BiaffineDepParser(Processor):
     Predicts head word and dependency relation for each word in the sentence.
     """
 
+    IMPLEMENTED = False  # placeholder, see ROADMAP.md
     NAME = "depparse"
     PROVIDES = ["depparse"]
     REQUIRES = ["tokenize", "pos"]

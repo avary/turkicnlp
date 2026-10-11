@@ -7,7 +7,6 @@ transformer for joint UPOS + morphological feature prediction.
 
 from __future__ import annotations
 
-from typing import Optional
 
 from turkicnlp.models.document import Document
 from turkicnlp.processors.base import Processor
@@ -20,6 +19,7 @@ class NeuralPOSTagger(Processor):
     word embeddings or contextual representations.
     """
 
+    IMPLEMENTED = False  # placeholder, see ROADMAP.md
     NAME = "pos"
     PROVIDES = ["pos", "feats"]
     REQUIRES = ["tokenize"]

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -811,7 +810,7 @@ class TestStanzaNERUnit:
         mock_sent = SimpleNamespace(tokens=[tok1, tok2, tok3])
         mock_stanza_doc = SimpleNamespace(sentences=[mock_sent])
 
-        with patch.object(_StanzaManager, "run_full_ner", return_value=mock_stanza_doc):
+        with patch.object(_StanzaManager, "run_pretokenized_ner", return_value=mock_stanza_doc):
             result = ner.process(doc)
 
         assert result.sentences[0].words[0].ner == "B-PER"
@@ -821,6 +820,38 @@ class TestStanzaNERUnit:
         assert result.sentences[0].entities[0].text == "Ahmet Yılmaz"
         assert result.sentences[0].entities[0].type == "PER"
         assert "ner:stanza" in result._processor_log
+
+
+    def test_ner_aligns_on_multiword_tokens(self):
+        """Tags come per token and are spread over the token's words."""
+        ner = StanzaNERProcessor(lang="tur")
+        ner._use_gpu = False
+        ner._loaded = True
+        w1 = Word(id=1, text="Ankara", start_char=0, end_char=6)
+        w2 = Word(id=2, text="da", start_char=6, end_char=8)
+        w3 = Word(id=3, text="ki", start_char=8, end_char=10)
+        w4 = Word(id=4, text="ev", start_char=11, end_char=13)
+        t1 = Token(id=(1, 3), text="Ankaradaki", words=[w1, w2, w3], start_char=0, end_char=10)
+        t2 = Token(id=(4,), text="ev", words=[w4], start_char=11, end_char=13)
+        sent = Sentence(text="Ankaradaki ev", tokens=[t1, t2], words=[w1, w2, w3, w4])
+        doc = Document(text=sent.text, lang="tur", sentences=[sent])
+        mock = SimpleNamespace(sentences=[SimpleNamespace(tokens=[
+            SimpleNamespace(ner="S-LOC"), SimpleNamespace(ner="O")])])
+        with patch.object(_StanzaManager, "run_pretokenized_ner", return_value=mock):
+            ner.process(doc)
+        assert [w.ner for w in sent.words] == ["B-LOC", "I-LOC", "I-LOC", "O"]
+
+    def test_ner_count_mismatch_gives_o(self):
+        ner = StanzaNERProcessor(lang="tur")
+        ner._use_gpu = False
+        ner._loaded = True
+        w1 = Word(id=1, text="Ahmet")
+        sent = Sentence(text="Ahmet", tokens=[], words=[w1])
+        doc = Document(text="Ahmet", lang="tur", sentences=[sent])
+        mock = SimpleNamespace(sentences=[])
+        with patch.object(_StanzaManager, "run_pretokenized_ner", return_value=mock):
+            ner.process(doc)
+        assert w1.ner == "O"
 
 
 class TestStanzaMWTExpanderUnit:
@@ -1012,7 +1043,7 @@ class TestStanzaIntegration:
 
     def test_full_pipeline_turkish(self):
         """End-to-end test with Turkish text."""
-        stanza = pytest.importorskip("stanza")
+        pytest.importorskip("stanza")
 
         doc = Document(text="Merhaba dünya.", lang="tur")
 
@@ -1044,7 +1075,7 @@ class TestStanzaIntegration:
 
     def test_full_pipeline_kazakh(self):
         """End-to-end test with Kazakh Cyrillic text."""
-        stanza = pytest.importorskip("stanza")
+        pytest.importorskip("stanza")
 
         doc = Document(text="Мен мектепке бардым.", lang="kaz")
 
@@ -1066,7 +1097,7 @@ class TestStanzaIntegration:
 
     def test_full_pipeline_kyrgyz(self):
         """End-to-end test with Kyrgyz Cyrillic text."""
-        stanza = pytest.importorskip("stanza")
+        pytest.importorskip("stanza")
 
         doc = Document(text="Мен мектепке бардым.", lang="kir")
 
@@ -1088,7 +1119,7 @@ class TestStanzaIntegration:
 
     def test_full_pipeline_uzbek(self):
         """End-to-end test with Uzbek Latin text (custom Stanza model)."""
-        stanza = pytest.importorskip("stanza")
+        pytest.importorskip("stanza")
 
         # Ensure custom models are downloaded
         from turkicnlp.resources.downloader import download
@@ -1116,7 +1147,7 @@ class TestStanzaIntegration:
 
     def test_pretokenized_mode_turkish(self):
         """Test Stanza POS/lemma/depparse with rule-based tokenizer."""
-        stanza = pytest.importorskip("stanza")
+        pytest.importorskip("stanza")
         from turkicnlp.processors.tokenizer import RegexTokenizer
 
         doc = Document(text="Merhaba dünya.", lang="tur")
@@ -1135,7 +1166,7 @@ class TestStanzaIntegration:
 
     def test_conllu_export_after_stanza_turkish(self):
         """Test that CoNLL-U export works after Stanza processing."""
-        stanza = pytest.importorskip("stanza")
+        pytest.importorskip("stanza")
 
         doc = Document(text="Merhaba dünya.", lang="tur")
 
@@ -1155,7 +1186,7 @@ class TestStanzaIntegration:
 
     def test_conllu_export_after_stanza_uzbek(self):
         """Test CoNLL-U export after custom Stanza processing for Uzbek."""
-        stanza = pytest.importorskip("stanza")
+        pytest.importorskip("stanza")
         from turkicnlp.resources.downloader import download
 
         download("uzb", processors=["tokenize", "pos", "lemma", "depparse"])
@@ -1178,7 +1209,7 @@ class TestStanzaIntegration:
 
     def test_full_pipeline_turkmen(self):
         """End-to-end test with Turkmen Latin text (custom Stanza model)."""
-        stanza = pytest.importorskip("stanza")
+        pytest.importorskip("stanza")
 
         # Ensure custom models are downloaded
         from turkicnlp.resources.downloader import download
@@ -1206,7 +1237,7 @@ class TestStanzaIntegration:
 
     def test_conllu_export_after_stanza_turkmen(self):
         """Test CoNLL-U export after custom Stanza processing for Turkmen."""
-        stanza = pytest.importorskip("stanza")
+        pytest.importorskip("stanza")
         from turkicnlp.resources.downloader import download
 
         download("tuk", processors=["tokenize", "pos", "lemma", "depparse"])
@@ -1229,7 +1260,7 @@ class TestStanzaIntegration:
 
     def test_kazakh_pipeline(self):
         """Test Stanza with Kazakh text."""
-        stanza = pytest.importorskip("stanza")
+        pytest.importorskip("stanza")
 
         doc = Document(text="Сәлем әлем.", lang="kaz")
 

@@ -987,7 +987,8 @@
     "name": "Turkmen",
     "scripts": {
       "available": [
-        "Latn"
+        "Latn",
+        "Cyrl"
       ],
       "primary": "Latn"
     },
@@ -1310,7 +1311,8 @@
     "scripts": {
       "available": [
         "Arab",
-        "Latn"
+        "Latn",
+        "Cyrl"
       ],
       "primary": "Arab"
     },
@@ -2406,7 +2408,8 @@
     "name": "Ottoman Turkish",
     "scripts": {
       "available": [
-        "Arab"
+        "Arab",
+        "Latn"
       ],
       "primary": "Arab"
     },
@@ -2414,12 +2417,12 @@
       "Arab": {
         "tokenize": {
           "backends": {
-            "rule": {
+            "rule_arabic": {
               "type": "rule",
               "license": "Apache-2.0"
             }
           },
-          "default": "rule"
+          "default": "rule_arabic"
         },
         "pos": {
           "backends": {

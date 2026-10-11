@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from turkicnlp.models.document import Document
-from turkicnlp.processors.tokenizer import RegexTokenizer, NeuralTokenizer
+from turkicnlp.processors.tokenizer import RegexTokenizer
 from turkicnlp.processors.tokenizer_arabic import ArabicScriptTokenizer
 from turkicnlp.scripts import Script
 
@@ -62,14 +62,14 @@ class TestArabicScriptTokenizer:
 
         assert [s.text for s in doc.sentences] == ["مەكتەپ\u200cكە؟", "باردىم."]
 
+        # ZWNJ joins the parts of one word; it is not a token boundary (B15).
         words = doc.sentences[0].words
-        assert [w.text for w in words] == ["مەكتەپ", "كە", "؟"]
+        assert [w.text for w in words] == ["مەكتەپ\u200cكە", "؟"]
         assert [(w.start_char, w.end_char) for w in words] == [
-            (0, 6),
-            (7, 9),
+            (0, 9),
             (9, 10),
         ]
-        assert words[2].upos == "PUNCT"
+        assert words[1].upos == "PUNCT"
 
         words2 = doc.sentences[1].words
         assert [w.text for w in words2] == ["باردىم", "."]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import sys
 from types import SimpleNamespace
 
@@ -144,3 +146,12 @@ def test_clean_translation_unescapes_html_entities():
     assert _clean_translation("&quot;Salam&quot; &amp; xoş") == '"Salam" & xoş'
     assert _clean_translation("it&amp;apos;s") == "it's"
     assert _clean_translation("Plain text") == "Plain text"
+
+
+@pytest.fixture(autouse=True)
+def _clear_nllb_cache():
+    from turkicnlp.processors import _nllb_shared
+
+    _nllb_shared.clear()
+    yield
+    _nllb_shared.clear()

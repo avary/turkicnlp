@@ -21,6 +21,12 @@ from turkicnlp.scripts import Script, get_script_config
 from turkicnlp.scripts.transliterator import Transliterator
 
 
+# Languages whose orthography separates suffixes of proper names with an
+# apostrophe (Türkiye'de). In Uzbek or Karakalpak the apostrophe is part of
+# letters (o‘, g‘) or marks a glottal stop, so it is not a suffix boundary.
+APOSTROPHE_SUFFIX_LANGS = frozenset({"tur", "aze", "crh", "gag", "ota"})
+
+
 class ApertiumMorphProcessor(Processor):
     """Morphological analyzer using Apertium FST data loaded natively via ``hfst``.
 
@@ -230,7 +236,7 @@ class ApertiumMorphProcessor(Processor):
                 if best["pos"] in ("qst", "encl"):
                     # The question clitic carries its type in the POS slot.
                     feat_tags.insert(0, "qst")
-                raw_feats = self._tag_mapper.to_ud_feats(feat_tags)
+                raw_feats = self._tag_mapper.to_ud_feats(feat_tags, pos=best["pos"])
                 word.feats = self._normalize_ud_feats_for_upos(word.upos, raw_feats)
 
         log_extra = ""
@@ -399,8 +405,14 @@ class ApertiumMorphProcessor(Processor):
             return {"lemma": text, "upos": "NUM", "feats": "NumType=Card"}
 
         normalized = self._normalize_for_lookup(text)
-        if "'" in normalized and self._is_cased_script(text) and text[:1].isupper():
-            stem, suffix = normalized.split("'", 1)
+        if (
+            self.lang in APOSTROPHE_SUFFIX_LANGS
+            and "'" in normalized
+            and self._is_cased_script(text)
+            and text[:1].isupper()
+        ):
+            # Proper name + suffix (Türkiye'de, Kur'an'ı): split at the last apostrophe.
+            stem, suffix = normalized.rsplit("'", 1)
             if stem and suffix.isalpha() and len(suffix) <= 4:
                 return {"lemma": stem, "upos": "PROPN", "feats": "_"}
 
@@ -523,7 +535,7 @@ class ApertiumMorphProcessor(Processor):
         output: str,
         readings_by_word: list[Optional[list[dict]]],
     ) -> Optional[list[Optional[dict]]]:
-        units = re.findall(r"\\^([^$]+)\\$", output)
+        units = re.findall(r"\^([^$]+)\$", output)
         if not units or len(units) != len(readings_by_word):
             return None
 
@@ -532,11 +544,10 @@ class ApertiumMorphProcessor(Processor):
             if readings is None:
                 selected.append(None)
                 continue
+            # "-p" output keeps the surface form (^surface/analysis$); plain
+            # "-g" output has only the chosen analysis (^analysis$).
             parts = unit.split("/")
-            if len(parts) < 2:
-                selected.append(None)
-                continue
-            analysis = parts[1]
+            analysis = parts[1] if len(parts) >= 2 else parts[0]
             parsed = self._parse_stream_analysis(analysis)
             if parsed is None:
                 selected.append(None)
@@ -852,8 +863,8 @@ class ApertiumMorphProcessor(Processor):
         try:
             results = self._generator.lookup(input_form)
             if results:
-                results.sort(key=lambda r: r[1])
-                surface = results[0][0]
+                # hfst returns a tuple of (form, weight) pairs: lowest weight first.
+                surface = sorted(results, key=lambda r: r[1])[0][0]
                 if self._needs_translit and self._from_fst_translit:
                     surface = self._from_fst_translit.transliterate(surface)
                 return surface
@@ -873,6 +884,7 @@ class NeuralMorphProcessor(Processor):
     For languages without Apertium FSTs or as a higher-accuracy alternative.
     """
 
+    IMPLEMENTED = False  # placeholder, see ROADMAP.md
     NAME = "morph"
     PROVIDES = ["lemma", "pos", "feats"]
     REQUIRES = ["tokenize"]

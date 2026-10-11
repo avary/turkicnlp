@@ -46,7 +46,9 @@ class CommonTurkicTagMapper(TagMapper):
         "past": "Tense=Past",
         "pres": "Tense=Pres",
         "fut": "Tense=Fut",
-        "aor": "Tense=Aor",
+        # Aorist (-Ir/-Ar): UD has no Tense=Aor; UD Turkic treebanks use
+        # habitual aspect in the present.
+        "aor": "Aspect=Hab|Tense=Pres",
         # <ifi> is the definite (witnessed) past in -DI in every Apertium
         # Turkic analyser (tur geldi, kaz келді, uzb keldi, ...), not an evidential.
         "ifi": "Tense=Past",
@@ -56,7 +58,8 @@ class CommonTurkicTagMapper(TagMapper):
         "prog": "Aspect=Prog",
         "perf": "Aspect=Perf",
         # Mood
-        "ind": "Mood=Ind",
+        # "ind" is Mood=Ind on verbs and PronType=Ind on pronouns/determiners,
+        # see map_ud_feats().
         "imp": "Mood=Imp",
         "opt": "Mood=Opt",
         "cond": "Mood=Cnd",
@@ -102,16 +105,41 @@ class CommonTurkicTagMapper(TagMapper):
         # Degree
         "comp": "Degree=Cmp",
         "sup": "Degree=Sup",
-        # Gender (rare for Turkic but present in some tagsets)
+        # Gender (only on Russian personal names in some analysers). <n> is not
+        # mapped: in Turkic analyses it is the noun POS of a derivation step.
         "f": "Gender=Fem",
         "m": "Gender=Masc",
-        "n": "Gender=Neut",
         # Pronouns / particles
         "pers": "PronType=Prs",
         "dem": "PronType=Dem",
         "qst": "PartType=Int",
         "int": "PronType=Int",
         "rel": "PronType=Rel",
-        "ind": "PronType=Ind",
         "refl": "Reflex=Yes",
     }
+
+    PRONOMINAL_POS = frozenset({"prn", "det"})
+
+    def map_ud_feats(
+        self, apertium_feats: list[str], pos: str | None = None
+    ) -> tuple[list[str], list[str]]:
+        """Map features; ``pos`` disambiguates tags such as ``ind``.
+
+        POS tags that appear inside the feature list (the POS of a later
+        derivation step, e.g. ``<ger><n>``) are skipped instead of being read as
+        features.
+        """
+        ud_feats: list[str] = []
+        unknown: list[str] = []
+        for feat in apertium_feats:
+            if feat == "ind":
+                ud_feats.append("PronType=Ind" if pos in self.PRONOMINAL_POS else "Mood=Ind")
+                continue
+            mapped = self.FEAT_MAP.get(feat)
+            if mapped is not None:
+                ud_feats.append(mapped)
+            elif feat in self.POS_MAP:
+                continue
+            else:
+                unknown.append(feat)
+        return ud_feats, unknown

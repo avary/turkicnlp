@@ -12,6 +12,7 @@ from pathlib import Path
 
 from turkicnlp.models.document import Document, Sentence
 from turkicnlp.processors.base import Processor
+from turkicnlp.processors._nllb_shared import to_cpu, to_device
 
 _DEFAULT_MODEL = "facebook/nllb-200-distilled-600M"
 _NLLB_LANGS_CACHE: dict | None = None
@@ -75,7 +76,7 @@ class NLLBTranslateProcessor(Processor):
         """Load NLLB tokenizer + seq2seq model for generation."""
         try:
             import torch
-            from transformers import AutoModelForSeq2SeqLM
+            import transformers  # noqa: F401
             try:
                 from transformers import NllbTokenizer as _NLLBTokenizer
             except ImportError:
@@ -103,7 +104,10 @@ class NLLBTranslateProcessor(Processor):
             f"  → Loading NLLB model '{model_name}' for translation from {load_from}"
         )
         self._tokenizer = _NLLBTokenizer.from_pretrained(load_from, src_lang=src_lang)
-        self._model = AutoModelForSeq2SeqLM.from_pretrained(load_from)
+        from turkicnlp.processors._nllb_shared import load_nllb_model, select_device
+
+        self._device = select_device(bool(self.config.get("use_gpu", False)))
+        self._model = load_nllb_model(load_from, self._device)
         self._forced_bos_token_id = self._tokenizer.convert_tokens_to_ids(str(tgt_lang))
         if self._forced_bos_token_id is None or self._forced_bos_token_id < 0:
             raise ValueError(
@@ -148,13 +152,13 @@ class NLLBTranslateProcessor(Processor):
         )
         with self._torch.no_grad():
             generated = self._model.generate(
-                input_ids=encoded["input_ids"],
-                attention_mask=encoded["attention_mask"],
+                input_ids=to_device(encoded["input_ids"], self._device),
+                attention_mask=to_device(encoded["attention_mask"], self._device),
                 forced_bos_token_id=self._forced_bos_token_id,
                 num_beams=self._num_beams,
                 max_new_tokens=self._max_new_tokens,
             )
-        decoded = self._tokenizer.batch_decode(generated, skip_special_tokens=True)
+        decoded = self._tokenizer.batch_decode(to_cpu(generated), skip_special_tokens=True)
         return [_clean_translation(t) for t in decoded]
 
     def process(self, doc: Document) -> Document:

@@ -233,14 +233,6 @@
       "count": 1
     },
     {
-      "surface": "b\u00ee-\u00e7\u00e2re",
-      "split": [
-        "b\u00ee",
-        "\u00e7\u00e2re"
-      ],
-      "count": 1
-    },
-    {
       "surface": "b\u00fcy\u00fckidi",
       "split": [
         "b\u00fcy\u00fck",
@@ -556,7 +548,7 @@
     {
       "surface": "fen\u00e2dur",
       "split": [
-        "fen\u00e2dur",
+        "fen\u00e2",
         "dur"
       ],
       "count": 1
@@ -564,7 +556,7 @@
     {
       "surface": "fersa\u1e2bdur",
       "split": [
-        "fersa\u1e2bdur",
+        "fersa\u1e2b",
         "dur"
       ],
       "count": 1
@@ -852,16 +844,16 @@
     {
       "surface": "kem\u00e2l\u00e2t-n\u00fcm\u00fbddu",
       "split": [
-        "kem\u00e2l\u00e2t",
+        "kem\u00e2l\u00e2t-",
         "n\u00fcm\u00fbd",
-        "di"
+        "du"
       ],
       "count": 1
     },
     {
       "surface": "ken\u00e2r\u0131ndaki",
       "split": [
-        "ken\u00e2r\u0131ndaki",
+        "ken\u00e2r\u0131nda",
         "ki"
       ],
       "count": 1
@@ -950,7 +942,7 @@
       "surface": "k\u00fcnh\u00fc\u2019l-a\u1e2bb\u00e2run",
       "split": [
         "k\u00fcnh",
-        "\u00fc\u2019l-a\u1e2bb\u00e2ru\u00f1"
+        "\u00fc\u2019l-a\u1e2bb\u00e2run"
       ],
       "count": 1
     },
@@ -1086,7 +1078,7 @@
       "surface": "mesm\u00fb\u02bfdur",
       "split": [
         "mesm\u00fb\u02bf",
-        "d\u00fcr"
+        "dur"
       ],
       "count": 1
     },
@@ -1118,7 +1110,7 @@
       "surface": "mu\u02bfta\u1e33d\u0131r",
       "split": [
         "mu\u02bfta\u1e33",
-        "dur"
+        "d\u0131r"
       ],
       "count": 1
     },
@@ -1190,7 +1182,7 @@
       "surface": "m\u00fctek\u00e2s\u0331ird\u00fcr",
       "split": [
         "m\u00fctek\u00e2s\u0331ir",
-        "dur"
+        "d\u00fcr"
       ],
       "count": 1
     },
@@ -1262,7 +1254,7 @@
       "surface": "n\u00e2dird\u00fcr",
       "split": [
         "n\u00e2dir",
-        "dir"
+        "d\u00fcr"
       ],
       "count": 1
     },
@@ -1293,7 +1285,7 @@
     {
       "surface": "odur",
       "split": [
-        "odur",
+        "o",
         "dur"
       ],
       "count": 1
@@ -1518,7 +1510,7 @@
       "surface": "seng\u00e2d\u00eebd\u00fcr",
       "split": [
         "seng\u00e2d\u00eeb",
-        "dur"
+        "d\u00fcr"
       ],
       "count": 1
     },
@@ -1526,7 +1518,7 @@
       "surface": "sen\u00fc\u00f1i\u00e7\u00fcn",
       "split": [
         "sen\u00fc\u00f1",
-        "i\u00e7in"
+        "i\u00e7\u00fcn"
       ],
       "count": 1
     },
@@ -1574,7 +1566,7 @@
       "surface": "tanesiyle",
       "split": [
         "tanesi",
-        "ve"
+        "yle"
       ],
       "count": 1
     },
@@ -1613,8 +1605,8 @@
     {
       "surface": "uy\u0131riken",
       "split": [
-        "uy\u0131riken",
-        "ken"
+        "uy\u0131r",
+        "iken"
       ],
       "count": 1
     },
@@ -1662,7 +1654,7 @@
       "surface": "var\u0131sa",
       "split": [
         "var",
-        "sa"
+        "\u0131sa"
       ],
       "count": 2
     },
@@ -1749,7 +1741,7 @@
     {
       "surface": "yilmi\u015f",
       "split": [
-        "yilmi\u015f",
+        "yil",
         "mi\u015f"
       ],
       "count": 1
@@ -1758,7 +1750,7 @@
       "surface": "yird\u00fcr",
       "split": [
         "yir",
-        "dir"
+        "d\u00fcr"
       ],
       "count": 1
     },

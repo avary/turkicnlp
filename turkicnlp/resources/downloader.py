@@ -248,7 +248,7 @@ def _download_apertium_fst(
         )
 
     archive_path = dest / "apertium_fst.zip"
-    urllib.request.urlretrieve(url, archive_path, reporthook=_progress_hook)
+    _fetch(url, archive_path, reporthook=_progress_hook)
 
     expected_sha = backend_info.get("sha256")
     if expected_sha:
@@ -306,7 +306,7 @@ def _download_neural_model(
         )
     archive_path = dest / "model.zip"
     print(f"  ↓ Downloading model for {lang}/{script}/{proc_name} from {url}")
-    urllib.request.urlretrieve(url, archive_path, reporthook=_progress_hook)
+    _fetch(url, archive_path, reporthook=_progress_hook)
 
     expected_sha = backend_info.get("sha256")
     if expected_sha:
@@ -353,7 +353,7 @@ def _download_huggingface_seq2seq(
         )
 
     shared_dir = base_dir / "huggingface" / model_name.replace("/", "--")
-    if (shared_dir / "config.json").exists() and not force:
+    if hf_snapshot_complete(shared_dir) and not force:
         # Cached: nothing to download and nothing to load into memory.
         return
 
@@ -370,9 +370,9 @@ def _download_huggingface_seq2seq(
     snapshot_download(
         repo_id=model_name,
         local_dir=str(shared_dir),
-        local_dir_use_symlinks=False,
         force_download=force,
     )
+    (shared_dir / HF_COMPLETE_MARKER).write_text("ok\n")
 
 
 def _download_stanza_custom_model(
@@ -396,6 +396,13 @@ def _download_stanza_custom_model(
         base_dir: Base model directory.
         force: Re-download even if already present.
     """
+    import importlib.util
+
+    if importlib.util.find_spec("stanza") is None:
+        raise ImportError(
+            "Stanza is required for the custom Stanza models of "
+            f"'{lang}'. Install it with: pip install \"turkicnlp[stanza]\""
+        )
     dest_dir = base_dir / "stanza_custom" / lang
     dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -409,7 +416,7 @@ def _download_stanza_custom_model(
         )
     if not dest_file.exists() or force:
         print(f"    ↓ {filename}")
-        urllib.request.urlretrieve(url, dest_file, reporthook=_progress_hook)
+        _fetch(url, dest_file, reporthook=_progress_hook)
         expected_sha = backend_info.get("sha256")
         if expected_sha:
             actual_sha = _sha256(dest_file)
@@ -438,7 +445,7 @@ def _download_stanza_custom_model(
                 part_file = dest_dir / part_name
                 if not part_file.exists() or force:
                     print(f"    ↓ {part_name}")
-                    urllib.request.urlretrieve(
+                    _fetch(
                         part_url, part_file, reporthook=_progress_hook
                     )
                     expected_sha = part.get("sha256")
@@ -470,7 +477,7 @@ def _download_stanza_custom_model(
         pretrain_file = dest_dir / pretrain_filename
         if not pretrain_file.exists() or force:
             print(f"    ↓ {pretrain_filename}")
-            urllib.request.urlretrieve(
+            _fetch(
                 pretrain_url, pretrain_file, reporthook=_progress_hook
             )
             pretrain_sha = backend_info.get("pretrain_sha256")
@@ -517,6 +524,46 @@ def _download_stanza_model(lang: str) -> None:
         stanza.download(stanza_lang, model_dir=str(stanza_dir), logging_level="WARNING")
     except TypeError:
         stanza.download(stanza_lang, dir=str(stanza_dir), logging_level="WARNING")
+
+
+def _fetch(url: str, dest, reporthook=None) -> None:
+    """Download ``url`` to ``dest`` atomically.
+
+    The data goes to ``<dest>.part`` first and is renamed only when the
+    transfer finished, so an interrupted download never looks complete.
+    """
+    dest = Path(dest)
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        urllib.request.urlretrieve(url, tmp, reporthook=reporthook)
+        tmp.replace(dest)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+HF_COMPLETE_MARKER = ".turkicnlp_complete"
+
+
+def hf_snapshot_complete(directory) -> bool:
+    """``True`` when a Hugging Face snapshot in ``directory`` finished downloading.
+
+    New downloads write :data:`HF_COMPLETE_MARKER` at the end. Older caches
+    without the marker count as complete when ``config.json`` and a weights
+    file exist and no ``*.incomplete`` file is left.
+    """
+    d = Path(directory)
+    if (d / HF_COMPLETE_MARKER).exists():
+        return True
+    if not (d / "config.json").exists():
+        return False
+    weights = any(d.glob("*.safetensors")) or any(d.glob("*.bin")) or any(d.glob("*.pt"))
+    if not weights:
+        return False
+    return not any(d.rglob("*.incomplete"))
 
 
 def _sha256(path: Path) -> str:

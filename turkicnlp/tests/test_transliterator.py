@@ -351,16 +351,16 @@ class TestOldTurkicTransliteration:
         assert t.transliterate("\U00010C09") == "b"
         assert t.transliterate("\U00010C0D") == "g"
         assert t.transliterate("\U00010C11") == "d"
-        assert t.transliterate("\U00010C32") == "t"
-        assert t.transliterate("\U00010C25") == "m"
-        assert t.transliterate("\U00010C26") == "n"
+        assert t.transliterate("\U00010C43") == "t"
+        assert t.transliterate("\U00010C22") == "m"
+        assert t.transliterate("\U00010C23") == "n"
 
     def test_orkh_to_latn_ligatures(self) -> None:
         t = Transliterator("otk", Script.OLD_TURKIC_RUNIC, Script.LATIN)
-        assert t.transliterate("\U00010C36") == "lt"
-        assert t.transliterate("\U00010C38") == "sh"
-        assert t.transliterate("\U00010C3B") == "nt"
-        assert t.transliterate("\U00010C3C") == "nch"
+        assert t.transliterate("\U00010C21") == "lt"
+        assert t.transliterate("\U00010C3F") == "sh"
+        assert t.transliterate("\U00010C26") == "nt"
+        assert t.transliterate("\U00010C28") == "nch"
 
 
 class TestAllTablesPresent:

@@ -49,17 +49,45 @@ def _tokenize(lang: str, script: Script, text: str) -> Document:
         ("ota", Script.PERSO_ARABIC, "قورقوتاتا آمد.", "قورقوتاتا", ["قورقوت", "اتا"]),
     ],
 )
-def test_mwt_expansion_with_default_rules(
+def test_mwt_expansion_mechanism(
     lang: str, script: Script, text: str, surface: str, pieces: list[str]
 ) -> None:
+    # The shipped "Korkutata" placeholder rule was removed (B16); exercise the
+    # expansion machinery per language with an injected rule instead.
     doc = _tokenize(lang, script, text)
     mwt = MWTProcessor(lang=lang, script=script)
     mwt.load("")
+    mwt._rules = {surface: pieces}
     mwt.process(doc)
 
     assert doc.sentences[0].tokens[0].is_mwt
     assert doc.sentences[0].tokens[0].text == surface
     assert [w.text for w in doc.sentences[0].tokens[0].words] == pieces
+
+
+@pytest.mark.parametrize(
+    "lang,text,surface,pieces",
+    [
+        ("tur", "SONRAKİ adım.", "SONRAKİ", ["SONRA", "Kİ"]),
+        ("tur", "Bu doğrudur.", "doğrudur", ["doğru", "dur"]),
+    ],
+)
+def test_mwt_expansion_with_extracted_rules(
+    lang: str, text: str, surface: str, pieces: list[str]
+) -> None:
+    doc = _tokenize(lang, Script.LATIN, text)
+    mwt = MWTProcessor(lang=lang, script=Script.LATIN)
+    mwt.load("")
+    mwt.process(doc)
+    tok = next(t for t in doc.sentences[0].tokens if t.text == surface)
+    assert tok.is_mwt
+    assert [w.text for w in tok.words] == pieces
+
+
+def test_placeholder_rule_removed() -> None:
+    mwt = MWTProcessor(lang="tur", script=Script.LATIN)
+    mwt.load("")
+    assert "Korkutata" not in mwt._rules
 
 
 def test_mwt_no_rule_no_change() -> None:

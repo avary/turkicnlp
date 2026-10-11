@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from turkicnlp.models.document import Document, Sentence, Token, Word, Span
+from turkicnlp.models.document import Document, Sentence, Token, Word
 
 
 class TestWord:

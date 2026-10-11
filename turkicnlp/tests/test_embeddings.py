@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import sys
 from types import SimpleNamespace
 
@@ -157,3 +159,12 @@ def test_embeddings_processor_without_sentences(monkeypatch):
     assert len(out.sentences) == 1
     assert out.sentences[0].embedding is not None
     assert out.embedding is not None
+
+
+@pytest.fixture(autouse=True)
+def _clear_nllb_cache():
+    from turkicnlp.processors import _nllb_shared
+
+    _nllb_shared.clear()
+    yield
+    _nllb_shared.clear()

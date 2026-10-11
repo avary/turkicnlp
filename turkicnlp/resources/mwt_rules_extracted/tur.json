@@ -154,14 +154,6 @@
       "count": 1
     },
     {
-      "surface": "3'l\u00fck",
-      "split": [
-        "_",
-        "3'l\u00fck"
-      ],
-      "count": 1
-    },
-    {
       "surface": "30'lu",
       "split": [
         "30",
@@ -1431,7 +1423,7 @@
     {
       "surface": "Dura\u011fanl\u0131k'ken",
       "split": [
-        "Dura\u011fanl\u0131k",
+        "Dura\u011fanl\u0131k'",
         "ken"
       ],
       "count": 1
@@ -3019,7 +3011,7 @@
     {
       "surface": "SONRAK\u0130",
       "split": [
-        "SONRAK\u0130",
+        "SONRA",
         "K\u0130"
       ],
       "count": 1
@@ -3372,7 +3364,7 @@
     {
       "surface": "S\u0131v\u0131ya\u011f\u0131",
       "split": [
-        "S\u0131v\u0131ya\u011f\u0131",
+        "S\u0131v\u0131",
         "ya\u011f\u0131"
       ],
       "count": 1
@@ -3928,8 +3920,8 @@
     {
       "surface": "ZEK\u0130D\u0130R",
       "split": [
-        "ZEKI",
-        "DIR"
+        "ZEK\u0130",
+        "D\u0130R"
       ],
       "count": 1
     },
@@ -5784,7 +5776,7 @@
     {
       "surface": "a\u015fa\u011f\u0131dakilerden",
       "split": [
-        "a\u015fa\u011f\u0131dakilerden",
+        "a\u015fa\u011f\u0131da",
         "kilerden"
       ],
       "count": 1
@@ -5992,7 +5984,7 @@
     {
       "surface": "baksam",
       "split": [
-        "baksam",
+        "bak",
         "sam"
       ],
       "count": 2
@@ -6729,7 +6721,7 @@
     {
       "surface": "bembeyazd\u0131",
       "split": [
-        "bembeyazd\u0131",
+        "bembeyaz",
         "d\u0131"
       ],
       "count": 1
@@ -7377,7 +7369,7 @@
     {
       "surface": "bitmi\u015ftir",
       "split": [
-        "bitmi\u015ftir",
+        "bitmi\u015f",
         "tir"
       ],
       "count": 1
@@ -8241,7 +8233,7 @@
     {
       "surface": "canl\u0131yd\u0131",
       "split": [
-        "canl\u0131yd\u0131",
+        "canl\u0131",
         "yd\u0131"
       ],
       "count": 1
@@ -8337,7 +8329,7 @@
     {
       "surface": "dahildir",
       "split": [
-        "dahildir",
+        "dahil",
         "dir"
       ],
       "count": 1
@@ -8849,8 +8841,8 @@
     {
       "surface": "desem",
       "split": [
-        "desem",
-        "se"
+        "de",
+        "sem"
       ],
       "count": 1
     },
@@ -8906,7 +8898,7 @@
     {
       "surface": "deyi\u015fteki",
       "split": [
-        "deyi\u015f",
+        "deyi\u015fte",
         "ki"
       ],
       "count": 1
@@ -8939,7 +8931,7 @@
       "surface": "de\u011ferlidirler",
       "split": [
         "de\u011ferli",
-        "dir"
+        "dirler"
       ],
       "count": 1
     },
@@ -9034,8 +9026,8 @@
     {
       "surface": "de\u011fimlidir",
       "split": [
-        "de\u011fimlidir",
-        "midir"
+        "de\u011fimli",
+        "dir"
       ],
       "count": 1
     },
@@ -9194,7 +9186,7 @@
     {
       "surface": "disiplinliydi",
       "split": [
-        "disiplinliydi",
+        "disiplinli",
         "ydi"
       ],
       "count": 1
@@ -9539,7 +9531,7 @@
       "surface": "do\u011frudur",
       "split": [
         "do\u011fru",
-        "d\u0131r"
+        "dur"
       ],
       "count": 1
     },
@@ -10474,7 +10466,7 @@
     {
       "surface": "d\u00fc\u015f\u00fcn\u00fclse",
       "split": [
-        "d\u00fc\u015f\u00fcn\u00fclse",
+        "d\u00fc\u015f\u00fcn\u00fcl",
         "se"
       ],
       "count": 1
@@ -11074,7 +11066,7 @@
     {
       "surface": "emindim",
       "split": [
-        "emindim",
+        "emin",
         "dim"
       ],
       "count": 1
@@ -11771,7 +11763,7 @@
     {
       "surface": "farks\u0131zd\u0131r",
       "split": [
-        "farks\u0131zd\u0131r",
+        "farks\u0131z",
         "d\u0131r"
       ],
       "count": 1
@@ -12459,7 +12451,7 @@
     {
       "surface": "ger\u00e7ekle\u015ftiriyordur",
       "split": [
-        "ger\u00e7ekle\u015ftiriyordur",
+        "ger\u00e7ekle\u015ftiriyor",
         "dur"
       ],
       "count": 1
@@ -13147,7 +13139,7 @@
     {
       "surface": "gitsem",
       "split": [
-        "gitsem",
+        "git",
         "sem"
       ],
       "count": 1
@@ -14157,7 +14149,7 @@
     {
       "surface": "hakimdi",
       "split": [
-        "hakimdi",
+        "hakim",
         "di"
       ],
       "count": 1
@@ -14533,7 +14525,7 @@
     {
       "surface": "hayvanlard\u0131r",
       "split": [
-        "hayvanlard\u0131r",
+        "hayvanlar",
         "d\u0131r"
       ],
       "count": 1
@@ -14606,7 +14598,7 @@
       "surface": "haz\u0131rlanm\u0131\u015ft\u0131",
       "split": [
         "haz\u0131rlanm\u0131\u015f",
-        "d\u0131"
+        "t\u0131"
       ],
       "count": 1
     },
@@ -14685,7 +14677,7 @@
     {
       "surface": "her\u015feyi",
       "split": [
-        "het",
+        "her",
         "\u015feyi"
       ],
       "count": 1
@@ -15118,7 +15110,7 @@
     {
       "surface": "ilgin\u00e7tir",
       "split": [
-        "ilgin\u00e7tir",
+        "ilgin\u00e7",
         "tir"
       ],
       "count": 1
@@ -15807,14 +15799,6 @@
       "count": 1
     },
     {
-      "surface": "i\u00e7ice",
-      "split": [
-        "i\u00e7",
-        "i\u00e7e"
-      ],
-      "count": 1
-    },
-    {
       "surface": "i\u00e7iliyormu\u015f",
       "split": [
         "i\u00e7iliyor",
@@ -16017,7 +16001,7 @@
     {
       "surface": "i\u015ftir",
       "split": [
-        "i\u015ftir",
+        "i\u015f",
         "tir"
       ],
       "count": 1
@@ -16034,7 +16018,7 @@
       "surface": "i\u015f\u00e7iydi",
       "split": [
         "i\u015f\u00e7i",
-        "di"
+        "ydi"
       ],
       "count": 1
     },
@@ -16194,7 +16178,7 @@
       "surface": "kalacakt\u0131r",
       "split": [
         "kalacak",
-        "kalacakt\u0131r"
+        "t\u0131r"
       ],
       "count": 1
     },
@@ -16971,7 +16955,7 @@
     {
       "surface": "katmaktad\u0131r",
       "split": [
-        "katmaktad\u0131r",
+        "katmakta",
         "d\u0131r"
       ],
       "count": 1
@@ -17140,7 +17124,7 @@
       "surface": "kayg\u0131l\u0131yd\u0131m",
       "split": [
         "kayg\u0131l\u0131",
-        "d\u0131m"
+        "yd\u0131m"
       ],
       "count": 1
     },
@@ -17545,14 +17529,6 @@
       "count": 1
     },
     {
-      "surface": "kilometrelik",
-      "split": [
-        "_",
-        "kilometrelik"
-      ],
-      "count": 1
-    },
-    {
       "surface": "kimdi",
       "split": [
         "kim",
@@ -17636,7 +17612,7 @@
       "surface": "ki\u015fiyse",
       "split": [
         "ki\u015fi",
-        "se"
+        "yse"
       ],
       "count": 1
     },
@@ -18579,7 +18555,7 @@
     {
       "surface": "k\u00fc\u00e7\u00fckt\u00fc",
       "split": [
-        "k\u00fc\u00e7\u00fckt\u00fc",
+        "k\u00fc\u00e7\u00fck",
         "t\u00fc"
       ],
       "count": 1
@@ -18787,7 +18763,7 @@
     {
       "surface": "laiktir",
       "split": [
-        "laiktir",
+        "laik",
         "tir"
       ],
       "count": 1
@@ -18845,14 +18821,6 @@
       "split": [
         "liderli\u011finde",
         "ki"
-      ],
-      "count": 3
-    },
-    {
-      "surface": "liral\u0131k",
-      "split": [
-        "_",
-        "liral\u0131k"
       ],
       "count": 3
     },
@@ -19372,7 +19340,7 @@
     {
       "surface": "milyarl\u0131kt\u0131",
       "split": [
-        "milyarl\u0131kt\u0131",
+        "milyarl\u0131k",
         "t\u0131"
       ],
       "count": 1
@@ -19653,7 +19621,7 @@
     {
       "surface": "n'apard\u0131",
       "split": [
-        "n'apard\u0131",
+        "n'apar",
         "d\u0131"
       ],
       "count": 1
@@ -20069,7 +20037,6 @@
     {
       "surface": "okurkenki",
       "split": [
-        "_",
         "okurken",
         "ki"
       ],
@@ -20542,7 +20509,7 @@
     {
       "surface": "olsa",
       "split": [
-        "olsa",
+        "ol",
         "sa"
       ],
       "count": 1
@@ -20678,7 +20645,7 @@
     {
       "surface": "olu\u015fturmaktad\u0131r",
       "split": [
-        "olu\u015fturmaktad\u0131r",
+        "olu\u015fturmakta",
         "d\u0131r"
       ],
       "count": 1
@@ -20752,14 +20719,6 @@
       "split": [
         "onlarda",
         "ki"
-      ],
-      "count": 1
-    },
-    {
-      "surface": "onlar\u0131",
-      "split": [
-        "onlar\u0131",
-        "onlar\u0131"
       ],
       "count": 1
     },
@@ -22874,7 +22833,7 @@
     {
       "surface": "sezonki",
       "split": [
-        "sezonki",
+        "sezon",
         "ki"
       ],
       "count": 1
@@ -24380,14 +24339,6 @@
       "count": 1
     },
     {
-      "surface": "tembihlesede",
-      "split": [
-        "tembihlesede",
-        "sede"
-      ],
-      "count": 1
-    },
-    {
       "surface": "temsilcileridir",
       "split": [
         "temsilcileri",
@@ -24463,7 +24414,7 @@
     {
       "surface": "tertiplidir",
       "split": [
-        "tertip",
+        "tertipli",
         "dir"
       ],
       "count": 1
@@ -24694,14 +24645,6 @@
       "count": 1
     },
     {
-      "surface": "trilyonluk",
-      "split": [
-        "_",
-        "trilyonluk"
-      ],
-      "count": 3
-    },
-    {
       "surface": "tutabilecektir",
       "split": [
         "tutabilecek",
@@ -24864,7 +24807,7 @@
     {
       "surface": "t\u0131rmand\u0131",
       "split": [
-        "t\u0131rmand\u0131",
+        "t\u0131rman",
         "d\u0131"
       ],
       "count": 1
@@ -25184,7 +25127,7 @@
     {
       "surface": "uzayl\u0131",
       "split": [
-        "uzayl\u0131",
+        "uzay",
         "l\u0131"
       ],
       "count": 1
@@ -25888,7 +25831,7 @@
     {
       "surface": "yak\u0131nd\u0131r",
       "split": [
-        "yak\u0131nd\u0131r",
+        "yak\u0131n",
         "d\u0131r"
       ],
       "count": 1
@@ -27360,7 +27303,7 @@
     {
       "surface": "yermi\u015f",
       "split": [
-        "yermi\u015f",
+        "yer",
         "mi\u015f"
       ],
       "count": 1
@@ -27452,14 +27395,6 @@
         "mi\u015f"
       ],
       "count": 3
-    },
-    {
-      "surface": "yirmibe\u015f'lik",
-      "split": [
-        "_",
-        "yirmibe\u015f'lik"
-      ],
-      "count": 1
     },
     {
       "surface": "yirmilerindeki",
@@ -27784,7 +27719,7 @@
     {
       "surface": "yumu\u015fakm\u0131\u015f",
       "split": [
-        "yumu\u015fakm\u0131\u015f",
+        "yumu\u015fak",
         "m\u0131\u015f"
       ],
       "count": 1
@@ -29193,7 +29128,7 @@
       "surface": "\u00e7evriliymi\u015f",
       "split": [
         "\u00e7evrili",
-        "mi\u015f"
+        "ymi\u015f"
       ],
       "count": 1
     },
@@ -29440,7 +29375,7 @@
     {
       "surface": "\u00e7\u0131karm\u0131\u015ft\u0131r",
       "split": [
-        "\u00e7\u0131karm\u0131\u015ft\u0131r",
+        "\u00e7\u0131karm\u0131\u015f",
         "t\u0131r"
       ],
       "count": 1
@@ -29536,7 +29471,7 @@
     {
       "surface": "\u00e7\u0131kmayacakt\u0131r",
       "split": [
-        "\u00e7\u0131kmayacakt\u0131r",
+        "\u00e7\u0131kmayacak",
         "t\u0131r"
       ],
       "count": 1
@@ -30843,8 +30778,8 @@
     {
       "surface": "\u0130\u00c7ER\u0130S\u0130NDEK\u0130",
       "split": [
-        "\u0130\u00c7ER\u0130SINDE",
-        "KI"
+        "\u0130\u00c7ER\u0130S\u0130NDE",
+        "K\u0130"
       ],
       "count": 1
     },
@@ -31076,7 +31011,7 @@
       "surface": "\u015fekerli",
       "split": [
         "\u015feker",
-        "l\u0131"
+        "li"
       ],
       "count": 1
     },

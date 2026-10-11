@@ -9,6 +9,7 @@ from pathlib import Path
 
 from turkicnlp.models.document import Document, Sentence
 from turkicnlp.processors.base import Processor
+from turkicnlp.processors._nllb_shared import to_cpu, to_device
 
 _NLLB_LANG_MAP: dict[str, str] = {
     "aze": "azj_Latn",
@@ -38,7 +39,7 @@ class NLLBEmbeddingsProcessor(Processor):
         """Load tokenizer + seq2seq model and keep encoder for embeddings."""
         try:
             import torch
-            from transformers import AutoModelForSeq2SeqLM
+            import transformers  # noqa: F401
             try:
                 from transformers import NllbTokenizer as _NLLBTokenizer
             except ImportError:
@@ -67,7 +68,10 @@ class NLLBEmbeddingsProcessor(Processor):
             f"  → Loading NLLB model '{model_name}' for embeddings from {load_from}"
         )
         self._tokenizer = _NLLBTokenizer.from_pretrained(load_from, src_lang=src_lang)
-        self._model = AutoModelForSeq2SeqLM.from_pretrained(load_from)
+        from turkicnlp.processors._nllb_shared import load_nllb_model, select_device
+
+        self._device = select_device(bool(self.config.get("use_gpu", False)))
+        self._model = load_nllb_model(load_from, self._device)
         self._encoder = self._model.get_encoder()
         self._src_lang = str(src_lang)
         self._loaded = True
@@ -109,16 +113,16 @@ class NLLBEmbeddingsProcessor(Processor):
         )
         with self._torch.no_grad():
             out = self._encoder(
-                input_ids=encoded["input_ids"],
-                attention_mask=encoded["attention_mask"],
+                input_ids=to_device(encoded["input_ids"], self._device),
+                attention_mask=to_device(encoded["attention_mask"], self._device),
                 return_dict=True,
             )
             hidden = out.last_hidden_state
-            mask = encoded["attention_mask"].unsqueeze(-1)
+            mask = to_device(encoded["attention_mask"], self._device).unsqueeze(-1)
             pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
             if self._normalize:
                 pooled = self._torch.nn.functional.normalize(pooled, p=2, dim=1)
-        return [[float(x) for x in row] for row in pooled.tolist()]
+        return [[float(x) for x in row] for row in to_cpu(pooled).tolist()]
 
     def process(self, doc: Document) -> Document:
         """Attach sentence-level and document-level embeddings to the Document."""

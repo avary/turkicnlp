@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import urllib.request
+import threading
 from pathlib import Path
 from typing import Any, ClassVar, Optional
 
@@ -86,9 +86,9 @@ def _ensure_morph_checkpoint(base_dir: Path) -> Path:
         dest_file.unlink()
     dest_dir.mkdir(parents=True, exist_ok=True)
     print("  ↓ Downloading multilingual Glot500 morph analyzer checkpoint...")
-    urllib.request.urlretrieve(
-        MORPH_CHECKPOINT_URL, dest_file, reporthook=_progress_hook
-    )
+    from turkicnlp.resources.downloader import _fetch
+
+    _fetch(MORPH_CHECKPOINT_URL, dest_file, reporthook=_progress_hook)
     actual_sha = _sha256(dest_file)
     if actual_sha != MORPH_CHECKPOINT_SHA256:
         dest_file.unlink()
@@ -100,41 +100,12 @@ def _ensure_morph_checkpoint(base_dir: Path) -> Path:
 
 
 def _ensure_backbone(base_dir: Path) -> Path:
-    """Download the Glot500 backbone from HuggingFace if needed.
-
-    Shares the backbone with the parser model — if already downloaded,
-    this is a no-op.
-    """
-    shared_dir = base_dir / "huggingface" / BACKBONE_HF_NAME.replace("/", "--")
-    if (shared_dir / "config.json").exists():
-        return shared_dir
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        try:
-            from transformers import AutoModel, AutoTokenizer
-            print(f"  ↓ Downloading {BACKBONE_HF_NAME} backbone...")
-            shared_dir.mkdir(parents=True, exist_ok=True)
-            AutoTokenizer.from_pretrained(BACKBONE_HF_NAME).save_pretrained(
-                str(shared_dir)
-            )
-            AutoModel.from_pretrained(BACKBONE_HF_NAME).save_pretrained(
-                str(shared_dir)
-            )
-            return shared_dir
-        except ImportError:
-            raise ImportError(
-                "Downloading the Glot500 backbone requires `transformers` "
-                "or `huggingface_hub`. "
-                "Install with: pip install turkicnlp[transformers]"
-            )
-    print(f"  ↓ Downloading {BACKBONE_HF_NAME} backbone...")
-    shared_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_download(
-        repo_id=BACKBONE_HF_NAME,
-        local_dir=str(shared_dir),
+    """Download the Glot500 backbone if needed (shared with the parser)."""
+    from turkicnlp.processors.multilingual_backend import (
+        _ensure_backbone as _shared_ensure_backbone,
     )
-    return shared_dir
+
+    return _shared_ensure_backbone(base_dir)
 
 
 def _resolve_device(use_gpu: bool) -> torch.device:
@@ -161,11 +132,16 @@ class _MorphAnalyzerManager:
     """
 
     _models: ClassVar[dict[tuple, Any]] = {}
+    _lock: ClassVar[threading.RLock] = threading.RLock()
 
     @classmethod
     def clear(cls) -> None:
         """Clear all cached models (useful for testing)."""
-        cls._models.clear()
+        from turkicnlp.processors.multilingual_model import clear_backbone_cache
+
+        with cls._lock:
+            cls._models.clear()
+        clear_backbone_cache()
 
     @classmethod
     def ensure_downloaded(cls) -> tuple[Path, Path]:
@@ -188,52 +164,60 @@ class _MorphAnalyzerManager:
         """
         device = _resolve_device(use_gpu)
         key = (str(device),)
-        if key not in cls._models:
-            from turkicnlp.processors.multilingual_morph_model import (
-                TurkicMorphAnalyzer,
-                EditScriptVocab,
+        with cls._lock:
+            if key not in cls._models:
+                cls._models[key] = cls._load(device)
+            return cls._models[key]
+
+    @classmethod
+    def _load(cls, device: torch.device) -> tuple[Any, torch.device, Any]:
+        from turkicnlp.processors.multilingual_morph_model import (
+            TurkicMorphAnalyzer,
+            EditScriptVocab,
+        )
+        from turkicnlp.processors.multilingual_model import (
+            load_trained_state, state_has_backbone,
+        )
+
+        checkpoint_path, backbone_dir = cls.ensure_downloaded()
+
+        logger.info("Loading multilingual TurkicMorphAnalyzer on %s", device)
+        state = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+        # Load edit script vocabulary from checkpoint (required)
+        edit_vocab = EditScriptVocab()
+        if "edit_vocab" not in state or state["edit_vocab"] is None:
+            raise ValueError(
+                "Morph checkpoint is missing 'edit_vocab'. "
+                "The checkpoint may be corrupted or from an incompatible version."
             )
+        edit_vocab.load_state_dict(state["edit_vocab"])
+        num_edit_scripts = len(edit_vocab)
 
-            checkpoint_path, backbone_dir = cls.ensure_downloaded()
-
-            logger.info("Loading multilingual TurkicMorphAnalyzer on %s", device)
-            state = torch.load(
-                checkpoint_path, map_location=device, weights_only=False
+        if "trained_state_dict" in state:
+            weights, strict = state["trained_state_dict"], False
+        elif "model_state_dict" in state:
+            weights, strict = state["model_state_dict"], True
+        else:
+            raise ValueError(
+                f"Morph checkpoint {checkpoint_path} has neither "
+                "'trained_state_dict' nor 'model_state_dict'."
             )
-
-            # Load edit script vocabulary from checkpoint (required)
-            edit_vocab = EditScriptVocab()
-            if "edit_vocab" not in state or state["edit_vocab"] is None:
-                raise ValueError(
-                    "Morph checkpoint is missing 'edit_vocab'. "
-                    "The checkpoint may be corrupted or from an incompatible version."
-                )
-            edit_vocab.load_state_dict(state["edit_vocab"])
-            num_edit_scripts = len(edit_vocab)
-
-            model = TurkicMorphAnalyzer(
-                hf_cache_dir=str(backbone_dir),
-                num_edit_scripts=num_edit_scripts,
-            )
-            if "trained_state_dict" in state:
-                missing, unexpected = model.load_state_dict(
-                    state["trained_state_dict"], strict=False
-                )
-                # Backbone keys are expected to be missing (frozen, not saved)
-                non_backbone_missing = [
-                    k for k in missing if not k.startswith("backbone.")
-                ]
-                if non_backbone_missing:
-                    logger.warning(
-                        "Morph model missing non-backbone keys: %s",
-                        non_backbone_missing,
-                    )
-            elif "model_state_dict" in state:
-                model.load_state_dict(state["model_state_dict"])
-            model.to(device)
-            model.eval()
-            cls._models[key] = (model, device, edit_vocab)
-        return cls._models[key]
+        # Same frozen backbone as the parser -> one shared instance, unless the
+        # checkpoint brings its own (fine-tuned) backbone weights.
+        model = TurkicMorphAnalyzer(
+            hf_cache_dir=str(backbone_dir),
+            num_edit_scripts=num_edit_scripts,
+            device=device,
+            share_backbone=not state_has_backbone(weights),
+        )
+        if strict:
+            model.load_state_dict(weights)
+        else:
+            load_trained_state(model, weights, name="Glot500 morph")
+        model.to(device)
+        model.eval()
+        return model, device, edit_vocab
 
     @classmethod
     def run(cls, doc: Document, use_gpu: bool = False) -> dict:
@@ -252,7 +236,6 @@ class _MorphAnalyzerManager:
             resolve_morph_lang,
             tokenize_words,
             encode_chars,
-            apply_edit_script,
             UPOS_TAGS,
             UD_MORPH_FEATS,
             LANG_ID_MAP,
@@ -315,17 +298,30 @@ class _MorphAnalyzerManager:
             # Decode lemmas via edit scripts
             edit_ids = edit_logits[0, :n].argmax(-1).tolist()
             sent_lemmas = []
+            sent_pos = result["pos_tags"][-1]
             for i, eid in enumerate(edit_ids):
-                edit_str = edit_vocab.decode(eid)
-                if edit_str == "<unk>":
-                    # Fallback: identity (lowercase)
-                    sent_lemmas.append(words[i].lower())
-                else:
-                    sent_lemmas.append(apply_edit_script(words[i], edit_str))
+                sent_lemmas.append(
+                    predict_lemma(words[i], edit_vocab.decode(eid), doc.lang, sent_pos[i])
+                )
             result["lemmas"].append(sent_lemmas)
 
         doc._morph_analyzer_cache = result  # type: ignore[attr-defined]
         return result
+
+
+def predict_lemma(word: str, edit_str: str, lang: Optional[str], upos: Optional[str]) -> str:
+    """Lemma from a decoded edit script, with Turkic-aware casing.
+
+    The edit script is applied to the Turkic-lowercased form (``IŞIK`` ->
+    ``ışık``, never ``işik``); proper nouns get their capitalisation back
+    (``İstanbul`` stays ``İstanbul``).  ``<unk>`` scripts fall back to identity.
+    """
+    from turkicnlp.processors.multilingual_morph_model import (
+        apply_edit_script, restore_lemma_case,
+    )
+
+    lemma = apply_edit_script(word, "0" if edit_str == "<unk>" else edit_str, lang)
+    return restore_lemma_case(word, lemma, lang, upos)
 
 
 # ---------------------------------------------------------------------------

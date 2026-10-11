@@ -1,12 +1,3 @@
 {
-  "rules": [
-    {
-      "surface": "Korkutata",
-      "split": [
-        "Korkut",
-        "ata"
-      ],
-      "source": "starter"
-    }
-  ]
+  "rules": []
 }

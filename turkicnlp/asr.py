@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import io
 import logging
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
@@ -104,6 +105,7 @@ _CODE_TO_LANG: dict[str, tuple[str, str]] = {
 
 _SUPPORTED_LANGS_CACHE: Optional[frozenset[str]] = None
 _PIPELINE_CACHE: dict[tuple[str, str, str], Any] = {}
+_PIPELINE_LOCK = threading.Lock()
 
 AudioInput = Union[str, Path, bytes, dict, Any]
 
@@ -344,6 +346,8 @@ def split_audio(
     max_len = int(max_seconds * sample_rate)
     if max_len <= 0:
         raise ValueError("max_seconds must be positive.")
+    if n == 0:
+        return []  # empty audio: nothing to transcribe
     if n <= max_len:
         return [(0, n)]
 
@@ -402,6 +406,11 @@ def _get_pipeline(
     _require_omniasr()
     dev, torch_dtype, dtype_name = _resolve_device_and_dtype(device, dtype)
     key = (model_card, dev, dtype_name)
+    with _PIPELINE_LOCK:
+        return _load_pipeline_locked(key, model_card, dev, torch_dtype, dtype_name, low_memory)
+
+
+def _load_pipeline_locked(key, model_card, dev, torch_dtype, dtype_name, low_memory):
     if key not in _PIPELINE_CACHE:
         from omnilingual_asr.models.inference.pipeline import ASRInferencePipeline
 
@@ -576,10 +585,13 @@ class SpeechRecognizer:
                 seg_langs.append(plans[code].model_lang)
                 owners.append((idx, s / sr, e / sr))
 
-        self.load()
-        texts = self._pipeline.transcribe(
-            seg_audio, lang=seg_langs, batch_size=batch_size or self.batch_size
-        )
+        if seg_audio:
+            self.load()
+            texts = self._pipeline.transcribe(
+                seg_audio, lang=seg_langs, batch_size=batch_size or self.batch_size
+            )
+        else:
+            texts = []
 
         results: list[ASRResult] = []
         for idx, code in enumerate(langs):

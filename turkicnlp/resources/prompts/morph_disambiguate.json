@@ -1,0 +1,28 @@
+{
+ "version": 1,
+ "system": "You are an expert in the morphology of {language} ({script_name} script).\nA morphological analyser returned several possible analyses (lemma, UPOS, UD features) for some words of a sentence. For each listed word choose the analysis that is correct in this sentence.\nReturn JSON only: {\"choices\": [{\"i\": <word index>, \"option\": <option number>}]} with one entry per listed word.",
+ "user": "Sentence tokens: {tokens_json}\nAmbiguous words:\n{options_text}",
+ "examples": {
+  "default": [
+   {
+    "vars": {
+     "tokens": [
+      "Yarın",
+      "okula",
+      "gideceğim",
+      "."
+     ],
+     "options_text": "word 0 \"Yarın\":\n  0: yar NOUN Case=Gen|Number=Sing\n  1: yarın ADV _\n  2: yarın NOUN Case=Nom|Number=Sing"
+    },
+    "answer": {
+     "choices": [
+      {
+       "i": 0,
+       "option": 1
+      }
+     ]
+    }
+   }
+  ]
+ }
+}

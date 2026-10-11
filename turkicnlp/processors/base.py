@@ -38,6 +38,9 @@ class Processor(ABC):
     PROVIDES: list[str] = []
     REQUIRES: list[str] = []
     SUPPORTED_SCRIPTS: Optional[list[Script]] = None
+    #: ``False`` for placeholder classes that are registered but not implemented
+    #: yet. The pipeline never selects them on its own.
+    IMPLEMENTED: bool = True
 
     def __init__(
         self,
@@ -80,6 +83,10 @@ class Processor(ABC):
         """
         ...
 
+    def process_batch(self, docs: list[Document]) -> list[Document]:
+        """Annotate several documents; backends that batch model calls override this."""
+        return [self.process(doc) for doc in docs]
+
     def check_requirements(self, doc: Document) -> None:
         """Verify that required annotations and script compatibility are present.
 
@@ -90,12 +97,15 @@ class Processor(ABC):
             ProcessorRequirementsError: If requirements are not satisfied.
         """
         if "tokenize" in self.REQUIRES and not doc.sentences:
+            if not (doc.text or "").strip():
+                return  # empty input: nothing to annotate, not an error
             raise ProcessorRequirementsError(
                 f"Processor '{self.NAME}' requires tokenization, "
                 f"but document has no sentences."
             )
         if "pos" in self.REQUIRES:
-            if not doc.words or doc.words[0].upos is None:
+            words = doc.words
+            if words and all(w.upos is None for w in words):
                 raise ProcessorRequirementsError(
                     f"Processor '{self.NAME}' requires POS tags."
                 )

@@ -13,10 +13,10 @@ Architecture:
 from __future__ import annotations
 
 import unicodedata
+from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 
 # ---------------------------------------------------------------------------
@@ -36,13 +36,15 @@ CHAR_FILTERS = 128
 BACKBONE_NAME = "cis-lmu/glot500-base"
 
 # Reuse shared model components from the parser model
-from turkicnlp.processors.multilingual_model import (
-    UPOS_TAGS,
+from turkicnlp.processors.multilingual_model import (  # noqa: E402
+    UPOS_TAGS,  # noqa: F401  (re-exported for the morph backend)
+    tokenize_words,  # noqa: F401  (re-exported for the morph backend)
     NUM_UPOS,
     LANG_TO_SCRIPT as _BASE_LANG_TO_SCRIPT,
     LANG_ID_MAP as _BASE_LANG_ID_MAP,
     ISO3_TO_SHORT as _BASE_ISO3_TO_SHORT,
-    tokenize_words,
+    load_backbone,
+    align_subwords_to_words,
     ScriptAdapter,
     LangEmbedding,
     SharedBiLSTM,
@@ -176,29 +178,102 @@ NUM_MORPH_FEATS = len(UD_MORPH_FEATS)
 # ---------------------------------------------------------------------------
 
 
-def _normalize_lower(text: str) -> str:
-    """Lowercase + NFC normalize to handle Turkish İ/I and composed chars."""
-    return unicodedata.normalize("NFC", text.lower())
+# Languages whose Latin alphabet distinguishes dotted İ/i from dotless I/ı, so
+# that capital I lowercases to ı (Turkish, Azerbaijani, Crimean Tatar, Gagauz,
+# Tatar Zamanälif, Kazakh 2021 Latin, Ottoman transcription, Khalaj).  Uzbek,
+# Turkmen and Karakalpak Latin have no ı: I lowercases to i there.
+DOTLESS_I_LANGS = frozenset({"tur", "aze", "crh", "gag", "tat", "kaz", "ota", "klj",
+                             "tr", "az", "kk", "tt"})
 
 
-def apply_edit_script(word: str, script: str) -> str:
-    """Apply an edit script to a word to produce a lemma.
+def turkic_lower(text: str, lang: Optional[str] = None) -> str:
+    """Lowercase with Turkic dotted/dotless I handling, NFC-normalised.
+
+    ``İ`` always becomes ``i`` (never ``i`` + combining dot).  ``I`` becomes
+    ``ı`` for languages in :data:`DOTLESS_I_LANGS` (and when *lang* is None,
+    the Turkish convention), otherwise ``i``.
+    """
+    dotless = lang is None or lang in DOTLESS_I_LANGS
+    out = []
+    for ch in unicodedata.normalize("NFC", text):
+        if ch == "\u0130":  # İ
+            out.append("i")
+        elif ch == "I":
+            out.append("ı" if dotless else "i")
+        else:
+            out.append(ch.lower())
+    return unicodedata.normalize("NFC", "".join(out))
+
+
+def turkic_upper(text: str, lang: Optional[str] = None) -> str:
+    """Uppercase with Turkic dotted/dotless I handling (i -> İ, ı -> I)."""
+    dotless = lang is None or lang in DOTLESS_I_LANGS
+    out = []
+    for ch in text:
+        if ch == "i":
+            out.append("\u0130" if dotless else "I")
+        elif ch == "ı":
+            out.append("I")
+        else:
+            out.append(ch.upper())
+    return "".join(out)
+
+
+def _normalize_lower(text: str, lang: Optional[str] = None) -> str:
+    """Lowercase + NFC normalize (Turkic-aware, see :func:`turkic_lower`)."""
+    return turkic_lower(text, lang)
+
+
+def restore_lemma_case(
+    form: str, lemma: str, lang: Optional[str] = None, upos: Optional[str] = None,
+) -> str:
+    """Give a (lowercase) predicted lemma the casing the word form calls for.
+
+    - all-caps forms (``IŞIK``) keep the lowercase lemma (``ışık``);
+    - capitalised proper nouns (``İstanbul'da``, PROPN) keep the form's casing
+      on the shared prefix (``İstanbul``), or at least an initial capital;
+    - everything else is lowercase (sentence-initial common words).
+    """
+    if not lemma or not form:
+        return lemma
+    letters = [c for c in form if c.isalpha()]
+    if not letters or not any(c.isupper() for c in letters):
+        return lemma
+    if len(letters) > 1 and all(c.isupper() for c in letters):
+        return lemma
+    if upos != "PROPN" or not form[0].isupper():
+        return lemma
+    lowered = turkic_lower(form, lang)
+    if len(lowered) == len(form) and lowered.startswith(lemma):
+        return form[: len(lemma)]
+    return turkic_upper(lemma[0], lang) + lemma[1:]
+
+
+def apply_edit_script(word: str, script: str, lang: Optional[str] = None) -> str:
+    """Apply an edit script to a word to produce a (lowercase) lemma.
 
     Edit scripts encode suffix removal + addition:
       - "0" = identity (word == lemma)
       - "-3+mek" = remove 3 chars from end, append "mek"
+
+    Use :func:`restore_lemma_case` to restore proper-noun capitalisation.
     """
-    base = _normalize_lower(word)
+    base = _normalize_lower(word, lang)
 
     if script == "0":
         return base
 
     parts = script.split("+", 1)
-    remove = abs(int(parts[0]))  # "-3" → 3
+    try:
+        remove = abs(int(parts[0]))  # "-3" → 3
+    except ValueError:
+        return base
     add = parts[1] if len(parts) > 1 else ""
 
     if remove == 0:
         return base + add
+    if remove >= len(base):
+        return base
     return base[:-remove] + add
 
 
@@ -362,40 +437,18 @@ class TurkicMorphAnalyzer(nn.Module):
     language embeddings, BiLSTM, and morph task heads.
     """
 
-    def __init__(self, hf_cache_dir: str, num_edit_scripts: int):
+    def __init__(
+        self,
+        hf_cache_dir: str,
+        num_edit_scripts: int,
+        device: Optional[torch.device | str] = None,
+        share_backbone: bool = True,
+    ):
         super().__init__()
-        from transformers import AutoTokenizer, AutoModel
-
-        import io, sys, logging as _logging
-        _loggers = [
-            _logging.getLogger(name)
-            for name in ("transformers.modeling_utils", "transformers.configuration_utils")
-        ]
-        _prev_levels = [lg.level for lg in _loggers]
-        for lg in _loggers:
-            lg.setLevel(_logging.ERROR)
-
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            BACKBONE_NAME, cache_dir=hf_cache_dir
+        # The backbone is shared (by path + device) with the POS/dep parser
+        self.tokenizer, self.backbone = load_backbone(
+            hf_cache_dir, device=device, shared=share_backbone,
         )
-        # Suppress "not sharded" stderr spam from safetensors
-        import os
-        _devnull = os.open(os.devnull, os.O_WRONLY)
-        _saved_stderr = os.dup(2)
-        os.dup2(_devnull, 2)
-        try:
-            self.backbone = AutoModel.from_pretrained(
-                BACKBONE_NAME, cache_dir=hf_cache_dir
-            )
-        finally:
-            os.dup2(_saved_stderr, 2)
-            os.close(_saved_stderr)
-            os.close(_devnull)
-
-        for lg, lvl in zip(_loggers, _prev_levels):
-            lg.setLevel(lvl)
-        for param in self.backbone.parameters():
-            param.requires_grad = False
 
         self.adapters = nn.ModuleDict({
             "Latn": ScriptAdapter(HIDDEN_DIM, ADAPTER_BOTTLENECK),
@@ -423,9 +476,8 @@ class TurkicMorphAnalyzer(nn.Module):
     def _align_subwords_to_words(
         self, hidden: torch.Tensor, word_starts: torch.Tensor,
     ) -> torch.Tensor:
-        """First-subword pooling: gather hidden state at each word's first subword."""
-        indices = word_starts.unsqueeze(-1).expand(-1, -1, hidden.size(-1))
-        return torch.gather(hidden, 1, indices)
+        """First-subword pooling (see ``align_subwords_to_words``)."""
+        return align_subwords_to_words(hidden, word_starts)
 
     def forward(
         self,

@@ -12,6 +12,13 @@ Architecture:
 
 from __future__ import annotations
 
+import logging
+import os
+import threading
+from pathlib import Path
+from typing import Any, Optional
+
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
@@ -31,6 +38,11 @@ ARC_MLP_DIM = 500
 LABEL_MLP_DIM = 100
 
 BACKBONE_NAME = "cis-lmu/glot500-base"
+
+# Maximum sequence length of the XLM-R style backbone (incl. special tokens)
+MAX_SEQ_LEN = 512
+
+logger = logging.getLogger(__name__)
 
 # UD UPOS tagset (17 tags) — order must match training
 UPOS_TAGS = [
@@ -107,6 +119,120 @@ def resolve_lang(iso3: str) -> tuple[str, str]:
         f"Supported: {sorted(SUPPORTED_LANGS)}"
     )
 
+
+
+# ---------------------------------------------------------------------------
+# Shared backbone loading
+# ---------------------------------------------------------------------------
+
+# One frozen Glot500 backbone (+ tokenizer) per (directory, device) is shared by
+# every model that uses it (the POS/dep parser and the morph analyzer), so running
+# both does not keep two 1 GB copies in memory.
+_BACKBONE_CACHE: dict[tuple[str, str], tuple[Any, Any]] = {}
+_BACKBONE_LOCK = threading.RLock()
+
+
+def _is_local_backbone_dir(path: Optional[str]) -> bool:
+    return bool(path) and (Path(path) / "config.json").exists()
+
+
+def _load_backbone_uncached(hf_dir: Optional[str]) -> tuple[Any, Any]:
+    """Load (tokenizer, backbone).
+
+    ``hf_dir`` is the directory filled by ``snapshot_download(local_dir=...)``;
+    it is loaded directly (no second download, works offline).  Only when the
+    directory does not hold a model is the hub name used, with ``hf_dir`` as cache.
+    """
+    from transformers import AutoModel, AutoTokenizer
+    import logging as _logging
+
+    if _is_local_backbone_dir(hf_dir):
+        source, kwargs = str(hf_dir), {}
+    else:
+        source, kwargs = BACKBONE_NAME, ({"cache_dir": hf_dir} if hf_dir else {})
+
+    _loggers = [
+        _logging.getLogger(name)
+        for name in ("transformers.modeling_utils", "transformers.configuration_utils")
+    ]
+    _prev_levels = [lg.level for lg in _loggers]
+    for lg in _loggers:
+        lg.setLevel(_logging.ERROR)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(source, **kwargs)
+        # Suppress "not sharded" stderr spam from safetensors
+        _devnull = os.open(os.devnull, os.O_WRONLY)
+        _saved_stderr = os.dup(2)
+        os.dup2(_devnull, 2)
+        try:
+            backbone = AutoModel.from_pretrained(source, **kwargs)
+        finally:
+            os.dup2(_saved_stderr, 2)
+            os.close(_saved_stderr)
+            os.close(_devnull)
+    finally:
+        for lg, lvl in zip(_loggers, _prev_levels):
+            lg.setLevel(lvl)
+
+    # Frozen backbone (inference only)
+    for param in backbone.parameters():
+        param.requires_grad = False
+    backbone.eval()
+    return tokenizer, backbone
+
+
+def load_backbone(
+    hf_dir: Optional[str],
+    device: Optional[torch.device | str] = None,
+    shared: bool = True,
+) -> tuple[Any, Any]:
+    """Return ``(tokenizer, backbone)`` for the Glot500 backbone in *hf_dir*.
+
+    With ``shared=True`` (default) the instance is cached per (resolved path,
+    device) and reused by every model, under a lock so concurrent loads do not
+    load it twice.  Use ``shared=False`` when the caller is going to overwrite
+    backbone weights (a checkpoint with a fine-tuned backbone).
+    """
+    dev = torch.device(device) if device is not None else None
+    if not shared:
+        tok, bb = _load_backbone_uncached(hf_dir)
+        return tok, (bb.to(dev) if dev is not None else bb)
+    path_key = str(Path(hf_dir).resolve()) if hf_dir else BACKBONE_NAME
+    key = (path_key, str(dev) if dev is not None else "cpu")
+    with _BACKBONE_LOCK:
+        if key not in _BACKBONE_CACHE:
+            tok, bb = _load_backbone_uncached(hf_dir)
+            if dev is not None:
+                bb = bb.to(dev)
+            _BACKBONE_CACHE[key] = (tok, bb)
+        return _BACKBONE_CACHE[key]
+
+
+def clear_backbone_cache() -> None:
+    """Drop the shared backbone instances (models already built keep theirs)."""
+    with _BACKBONE_LOCK:
+        _BACKBONE_CACHE.clear()
+
+
+def state_has_backbone(state_dict: dict) -> bool:
+    """True if a checkpoint state dict carries (fine-tuned) backbone weights."""
+    return any(k.startswith("backbone.") for k in state_dict)
+
+
+def load_trained_state(model: nn.Module, state_dict: dict, name: str = "model") -> None:
+    """``load_state_dict(strict=False)`` that reports what did not match.
+
+    Backbone keys are expected to be missing (the frozen backbone is not saved
+    in the checkpoint); every other missing or unexpected key is logged.
+    """
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    missing = [k for k in missing if not k.startswith("backbone.")]
+    if missing:
+        logger.warning("%s checkpoint is missing %d weight(s): %s", name, len(missing), missing)
+    if unexpected:
+        logger.warning(
+            "%s checkpoint has %d unexpected weight(s): %s", name, len(unexpected), unexpected
+        )
 
 # ---------------------------------------------------------------------------
 # Model components
@@ -249,40 +375,17 @@ class TurkicParser(nn.Module):
     language embeddings, BiLSTM, and task heads with hard-coded architecture.
     """
 
-    def __init__(self, hf_cache_dir: str):
+    def __init__(
+        self,
+        hf_cache_dir: str,
+        device: Optional[torch.device | str] = None,
+        share_backbone: bool = True,
+    ):
         super().__init__()
-        from transformers import AutoTokenizer, AutoModel
-        import io, sys, logging as _logging
-        _loggers = [
-            _logging.getLogger(name)
-            for name in ("transformers.modeling_utils", "transformers.configuration_utils")
-        ]
-        _prev_levels = [lg.level for lg in _loggers]
-        for lg in _loggers:
-            lg.setLevel(_logging.ERROR)
-
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            BACKBONE_NAME, cache_dir=hf_cache_dir
+        # The backbone is shared (by path + device) with other Glot500 models
+        self.tokenizer, self.backbone = load_backbone(
+            hf_cache_dir, device=device, shared=share_backbone,
         )
-        # Suppress "not sharded" stderr spam from safetensors
-        import os
-        _devnull = os.open(os.devnull, os.O_WRONLY)
-        _saved_stderr = os.dup(2)
-        os.dup2(_devnull, 2)
-        try:
-            self.backbone = AutoModel.from_pretrained(
-                BACKBONE_NAME, cache_dir=hf_cache_dir
-            )
-        finally:
-            os.dup2(_saved_stderr, 2)
-            os.close(_saved_stderr)
-            os.close(_devnull)
-
-        for lg, lvl in zip(_loggers, _prev_levels):
-            lg.setLevel(lvl)
-        # Freeze backbone entirely (inference only)
-        for param in self.backbone.parameters():
-            param.requires_grad = False
 
         self.adapters = nn.ModuleDict({
             "Latn": ScriptAdapter(HIDDEN_DIM, ADAPTER_BOTTLENECK),
@@ -304,9 +407,8 @@ class TurkicParser(nn.Module):
     def _align_subwords_to_words(
         self, hidden: torch.Tensor, word_starts: torch.Tensor,
     ) -> torch.Tensor:
-        """First-subword pooling: gather hidden state at each word's first subword."""
-        indices = word_starts.unsqueeze(-1).expand(-1, -1, hidden.size(-1))
-        return torch.gather(hidden, 1, indices)
+        """First-subword pooling (see :func:`align_subwords_to_words`)."""
+        return align_subwords_to_words(hidden, word_starts)
 
     def forward(
         self,
@@ -345,52 +447,249 @@ class TurkicParser(nn.Module):
         return pos_logits, arc_logits, label_logits
 
 
+def align_subwords_to_words(hidden: torch.Tensor, word_starts: torch.Tensor) -> torch.Tensor:
+    """First-subword pooling.
+
+    ``hidden`` is ``[N_windows, L, H]``; ``word_starts`` is ``[B, T]`` holding,
+    for every word, the *flat* index ``window * L + position`` of its first
+    subword (see :func:`tokenize_words`).  Returns ``[B, T, H]``.
+    """
+    flat = hidden.reshape(-1, hidden.size(-1))
+    return flat[word_starts]
+
+
+def _word_pieces(tokenizer, words: list[str]) -> list[list[int]]:
+    """Subword ids of every word (without special tokens).
+
+    Words that the tokenizer maps to no subword at all (e.g. stray control or
+    format characters) get the unknown token, so every word owns at least one
+    position and later words are never shifted.
+    """
+    pieces: Optional[list[list[int]]] = None
+    if getattr(tokenizer, "is_fast", False):
+        try:
+            enc = tokenizer(words, is_split_into_words=True, add_special_tokens=False)
+            word_ids = enc.word_ids()
+            pieces = [[] for _ in words]
+            for tok_id, wid in zip(enc["input_ids"], word_ids):
+                if wid is not None:
+                    pieces[wid].append(tok_id)
+        except (ValueError, AttributeError, TypeError):
+            pieces = None
+    if pieces is None:
+        pieces = [
+            list(tokenizer(w, add_special_tokens=False)["input_ids"]) if w else []
+            for w in words
+        ]
+    unk = tokenizer.unk_token_id
+    if unk is None:
+        unk = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    return [p if p else [unk] for p in pieces]
+
+
+def _special_layout(tokenizer) -> tuple[list[int], list[int]]:
+    """Special tokens placed before / after a single sequence (e.g. <s> ... </s>)."""
+    sentinel = -12345
+    try:
+        built = tokenizer.build_inputs_with_special_tokens([sentinel])
+        k = built.index(sentinel)
+        return list(built[:k]), list(built[k + 1:])
+    except Exception:  # noqa: BLE001
+        pre = [tokenizer.cls_token_id] if tokenizer.cls_token_id is not None else []
+        post = [tokenizer.sep_token_id] if tokenizer.sep_token_id is not None else []
+        return pre, post
+
+
+def chunk_word_pieces(pieces: list[list[int]], budget: int) -> list[list[int]]:
+    """Split word indices into consecutive windows whose subwords fit *budget*.
+
+    A single word longer than the budget gets a window of its own (and is cut
+    to the budget; its first subword, the one used for prediction, is kept).
+    """
+    windows: list[list[int]] = []
+    current: list[int] = []
+    used = 0
+    for wi, p in enumerate(pieces):
+        n = min(len(p), budget)
+        if current and used + n > budget:
+            windows.append(current)
+            current, used = [], 0
+        current.append(wi)
+        used += n
+    if current:
+        windows.append(current)
+    return windows
+
+
 def tokenize_words(
     tokenizer,
     words_list: list[list[str]],
     device: torch.device,
+    max_length: int = MAX_SEQ_LEN,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Tokenize pre-split word lists and compute subword-to-word alignment.
+
+    Each word is explicitly mapped to the position of its first subword.
+    Sentences longer than the backbone limit are split into several windows of
+    whole words (no truncation); the backbone runs on every window and the
+    word-level states are gathered back into one sequence per sentence.
 
     Args:
         tokenizer: HuggingFace tokenizer.
         words_list: List of word lists (one per sentence).
         device: Target device for tensors.
+        max_length: Maximum window length including special tokens.
 
     Returns:
-        (input_ids, attention_mask, word_starts, word_lengths) tensors.
+        ``(input_ids, attention_mask, word_starts, word_lengths)`` where
+        ``input_ids``/``attention_mask`` are ``[N_windows, L]`` and
+        ``word_starts`` is ``[B, T]`` with flat indices ``window * L + pos``
+        (consumed by :func:`align_subwords_to_words`).
     """
-    encodings = tokenizer(
-        words_list,
-        is_split_into_words=True,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=512,
-    )
+    pre, post = _special_layout(tokenizer)
+    limit = min(max_length, getattr(tokenizer, "model_max_length", max_length) or max_length)
+    budget = max(1, limit - len(pre) - len(post))
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
-    max_word_len = max(len(ws) for ws in words_list)
-    word_starts = []
-    for i in range(len(words_list)):
-        word_ids = encodings.word_ids(batch_index=i)
-        starts = []
-        seen: set[int] = set()
-        for subword_idx, word_id in enumerate(word_ids):
-            if word_id is not None and word_id not in seen:
-                starts.append(subword_idx)
-                seen.add(word_id)
-        while len(starts) < max_word_len:
-            starts.append(0)
-        word_starts.append(starts)
+    rows: list[list[int]] = []
+    sent_positions: list[list[tuple[int, int]]] = []  # per word: (row, position)
+    for words in words_list:
+        pieces = _word_pieces(tokenizer, words) if words else []
+        positions: list[tuple[int, int]] = []
+        for window in chunk_word_pieces(pieces, budget) if pieces else []:
+            row = list(pre)
+            for wi in window:
+                positions.append((len(rows), len(row)))
+                row.extend(pieces[wi][:budget])
+            row.extend(post)
+            rows.append(row)
+        sent_positions.append(positions)
 
-    word_starts_t = torch.tensor(word_starts, dtype=torch.long, device=device)
+    if not rows:  # only empty sentences: one dummy window
+        rows.append(list(pre) + list(post) or [pad_id])
+
+    L = max(len(r) for r in rows)
+    input_ids = torch.full((len(rows), L), pad_id, dtype=torch.long)
+    attention_mask = torch.zeros((len(rows), L), dtype=torch.long)
+    for r, row in enumerate(rows):
+        input_ids[r, :len(row)] = torch.tensor(row, dtype=torch.long)
+        attention_mask[r, :len(row)] = 1
+
+    max_word_len = max((len(ws) for ws in words_list), default=0)
+    max_word_len = max(max_word_len, 1)
+    word_starts = torch.zeros((len(words_list), max_word_len), dtype=torch.long)
+    for i, positions in enumerate(sent_positions):
+        for j, (r, pos) in enumerate(positions):
+            word_starts[i, j] = r * L + pos
+
     word_lengths = torch.tensor(
-        [len(ws) for ws in words_list], dtype=torch.long, device=device
+        [len(ws) for ws in words_list], dtype=torch.long
+    )
+    return (
+        input_ids.to(device),
+        attention_mask.to(device),
+        word_starts.to(device),
+        word_lengths.to(device),
     )
 
-    return (
-        encodings["input_ids"].to(device),
-        encodings["attention_mask"].to(device),
-        word_starts_t,
-        word_lengths,
-    )
+
+# ---------------------------------------------------------------------------
+# Tree decoding
+# ---------------------------------------------------------------------------
+
+_NEG = -1e9
+
+
+def _find_cycle(heads: np.ndarray) -> Optional[list[int]]:
+    """Return the nodes of one cycle in a head array (node 0 = root), or None."""
+    n = len(heads)
+    state = [0] * n  # 0 = unvisited, 1 = on current path, 2 = done
+    state[0] = 2
+    for start in range(1, n):
+        if state[start]:
+            continue
+        path = []
+        v = start
+        while state[v] == 0:
+            state[v] = 1
+            path.append(v)
+            v = int(heads[v])
+        if state[v] == 1:  # closed a cycle
+            return path[path.index(v):]
+        for u in path:
+            state[u] = 2
+    return None
+
+
+def _chu_liu_edmonds(scores: np.ndarray) -> np.ndarray:
+    """Maximum spanning arborescence rooted at node 0.
+
+    ``scores[d, h]`` is the score of head ``h`` for dependent ``d``.
+    Returns the head of every node (``heads[0]`` is meaningless).
+    """
+    n = scores.shape[0]
+    scores = scores.copy()
+    np.fill_diagonal(scores, _NEG)
+    scores[0, :] = _NEG
+    heads = scores.argmax(axis=1)
+    heads[0] = 0
+    cycle = _find_cycle(heads)
+    if cycle is None:
+        return heads
+
+    cyc = np.array(sorted(cycle))
+    cyc_set = set(cycle)
+    rest = np.array([i for i in range(n) if i not in cyc_set])  # rest[0] == 0
+    m = len(rest)
+    c = m  # index of the contracted node
+    new = np.full((m + 1, m + 1), _NEG)
+    new[:m, :m] = scores[np.ix_(rest, rest)]
+    # head u outside -> cycle: gain of replacing the cycle arc of the entered node
+    enter = scores[np.ix_(cyc, rest)] - scores[cyc, heads[cyc]][:, None]
+    enter_best = enter.argmax(axis=0)
+    new[c, :m] = enter.max(axis=0)
+    # cycle node -> dependent d outside
+    leave = scores[np.ix_(rest, cyc)]
+    leave_best = leave.argmax(axis=1)
+    new[:m, c] = leave.max(axis=1)
+    new[0, :] = _NEG
+
+    sub = _chu_liu_edmonds(new)
+    result = heads.copy()
+    for i in range(1, m):
+        h = int(sub[i])
+        result[rest[i]] = rest[h] if h != c else cyc[leave_best[i]]
+    u = int(sub[c])
+    result[cyc[enter_best[u]]] = rest[u]
+    return result
+
+
+def decode_tree(arc_scores: Any) -> list[int]:
+    """Decode a well-formed dependency tree from arc scores.
+
+    Args:
+        arc_scores: ``[n, n + 1]`` scores (rows = words 1..n, columns = heads
+            0..n with 0 = ROOT), preferably log-probabilities.
+
+    Returns:
+        ``n`` heads (0 = ROOT): the highest-scoring tree with no self-loops,
+        no cycles and exactly one word attached to ROOT (Chu-Liu/Edmonds).
+        The single-root constraint is enforced exactly by giving every ROOT
+        arc the same large penalty, so the optimum uses as few ROOT arcs as
+        possible (one) and is otherwise unchanged.
+    """
+    if isinstance(arc_scores, torch.Tensor):
+        arc_scores = arc_scores.detach().double().cpu().numpy()
+    arc = np.asarray(arc_scores, dtype=np.float64)[:, : arc_scores.shape[0] + 1]
+    n = arc.shape[0]
+    if n == 0:
+        return []
+    finite = np.isfinite(arc)
+    arc = np.where(finite, np.clip(arc, -1e4, 1e4), _NEG)
+    span = float(arc[finite].max() - arc[finite].min()) if finite.any() else 0.0
+    penalty = (span + 1.0) * (n + 1)
+    scores = np.full((n + 1, n + 1), _NEG)
+    scores[1:, :] = arc
+    scores[1:, 0] = np.where(finite[:, 0], scores[1:, 0] - penalty, _NEG)
+    heads = _chu_liu_edmonds(scores)
+    return [int(h) for h in heads[1:]]

@@ -24,7 +24,7 @@ Items are grouped by area; inside each group they are roughly ordered by value f
 10. [Datasets and the Hugging Face Hub](#10-datasets-and-the-hugging-face-hub)
 11. [Evaluation and benchmarks](#11-evaluation-and-benchmarks)
 12. [Tooling, API and documentation](#12-tooling-api-and-documentation)
-13. [GenAI-era components](#13-genai-era-components)
+13. [LLM integration and GenAI-era components](#13-llm-integration-and-genai-era-components)
 14. [External resources worth wrapping](#14-external-resources-worth-wrapping)
 15. [Related projects that feed the toolkit](#15-related-projects-that-feed-the-toolkit)
 16. [Language priorities](#16-language-priorities)
@@ -40,14 +40,15 @@ Items are grouped by area; inside each group they are roughly ordered by value f
 | Scripts | Latin, Cyrillic, Perso-Arabic, Old Turkic runic; Common Turkic Alphabet (CTS) for 23 languages; automatic script detection |
 | Tokenization | Rule-based (all), Stanza (tur, kaz, kir, uig + custom aze, uzb, tuk, tat, bak), rule-based multi-word token expansion |
 | Morphology | Apertium HFST for 20 languages; Glot500 neural morph analyzer + lemmatizer for 23 languages |
-| Morpheme segmentation | Hybrid Apertium + neural `MorphemeTokenizer` (87% exact segmentation on a 483-word, 20-language test set) |
+| Morpheme segmentation | Hybrid Apertium + neural `MorphemeTokenizer` (89% exact segmentation on a 483-word, 20-language test set) |
 | Subword tokenization | `sp_tokenize`: SentencePiece with morpheme pre-segmentation (models not yet trained/released) |
 | POS / dependencies | Stanza (official + custom) and multilingual Glot500 parser (10 trained + 5 zero-shot languages) |
-| NER | Stanza, Turkish and Kazakh only |
+| NER | Stanza for Turkish and Kazakh; LLM backend for all languages |
 | Language ID | GlotLID, restricted to Turkic labels by default |
 | Translation / embeddings | NLLB-200 (600M), 11 languages |
 | Speech | Omnilingual ASR (`SpeechRecognizer`), 20 languages, separate environment |
-| Placeholders | `sentiment`, and the `neural` backends of `tokenize`, `pos`, `lemma`, `depparse`, `ner` are registered stubs |
+| LLM components | `turkicnlp.llm`: OpenAI-compatible or local Hugging Face LLM as backend of `morph`, `ner`, `translate`, `sentiment`, `spellcheck`; LLM disambiguation of Apertium readings; `llm.ask()` (first version) |
+| Placeholders | the `neural` backends of `sentiment`, and the `neural` backends of `tokenize`, `pos`, `lemma`, `depparse`, `ner` are registered stubs |
 
 ## 2. Known issues
 
@@ -61,9 +62,15 @@ Items are grouped by area; inside each group they are roughly ordered by value f
 - [ ] **Morpheme-segmentation numbers are optimistic.** The test set was also used during development, and gold data for 9 languages is unverified. Add a held-out split and native-speaker checks (see 11). **M**
 - [ ] **SentencePiece boundary marker.** The default morpheme boundary character in `sp_tokenize` can collide with SentencePiece's `▁`. The current default is kept for compatibility, so pick a safe default before the first model release. **S**
 - [ ] **Two environments are needed.** Speech recognition pins torch 2.8 / numpy < 2 / transformers 4.x (through fairseq2), so it cannot share an environment with transformers 5.x. Revisit when `omnilingual-asr` relaxes its pins. **S**
-- [ ] **Python version range.** The text environment with transformers 5.x needs Python ≥ 3.10. The core package still installs on 3.9, so decide whether to drop 3.9. **S**
 
 Fixed recently:
+
+- [x] **Toolkit review (version 0.5.0)**, see [CHANGELOG.md](CHANGELOG.md) for the full list: default pipelines no longer
+  select placeholder processors (crashed for crh, chv, gag, alt, tyv, kjh, klj); empty input; Old Turkic code points;
+  token offsets; field ownership between `morph`, `pos`, `feats` and `lemma`; automatic transliteration for scripts
+  without models; Glot500 long sentences, valid trees and lemma casing; tag-mapping errors; transliteration tables
+  and all-caps words; tokenizer brackets, abbreviations and ordinals; corrupt multi-word-token rules; LLM cache,
+  JSON fallback, API keys and spelling guard; atomic downloads; CoNLL-U round trips; Python ≥ 3.10.
 
 - [x] **Apertium transducer file selection** was arbitrary when a release ships several files. For example, Karachay-Balkar loaded `krc@Seegmiller` (a romanisation), so every Cyrillic word came out `X`; `kaz@Arab` and `uzb_guesser` were also possible picks.
 - [x] **Stress accents** blocked FST lookup (krc *барды́*).
@@ -83,8 +90,8 @@ Fixed recently:
 - [ ] Regression run of the Apertium processor on the challenge sentences after the tag-mapping fixes. Diff the old and new outputs, and keep that diff script in `scripts/` for future runs. **S**
 - [ ] Disambiguation adjacency rules: postposition after a case-marked noun, copula after a noun/adjective, and a PROPN boost for capitalised known names. **S**
 - [ ] Old Turkic (`otk`): either add morphology/POS (e.g. from the Old Turkic UD treebank) or state clearly in the docs that `otk` is transliteration + tokenization only. **S**
-- [ ] Remove or hide the stub backends (`sentiment`, `neural` tokenize/pos/lemma/depparse/ner) until they are implemented, so users cannot select them by accident. **S**
-- [ ] `CHANGELOG.md` and tagged releases on PyPI with release notes. **S**
+- [x] Stub backends are marked `IMPLEMENTED = False` and never selected by the pipeline itself.
+- [ ] Tagged releases on PyPI with release notes from `CHANGELOG.md`. **S**
 - [ ] ASR in CI (mocked tests already exist; add a job with the speech lock file). **S**
 
 ## 4. Morphology, lemmas and lexicons
@@ -154,7 +161,7 @@ Fixed recently:
 
 ## 9. Text normalization and spelling
 
-- [ ] **Spell checker.** Use `hfst-ospell` over the existing Apertium FSTs (~20 languages) as a fast baseline. The Glot500 seq2seq model from `train-spell-checker` comes later as a neural backend, after regenerating its corpus at scale and reporting real per-language scores. **M**
+- [~] **Spell checker.** One multilingual ByT5 model (`train-spell-checker`): noisy → clean sentence correction for 22 languages and their secondary scripts, with a `<lang_Script>` input tag. Pipeline is implemented; training and per-language evaluation pending. Then wrap it as `turkicnlp.SpellChecker` / a `spellcheck` processor, with an `hfst-ospell` word checker over the Apertium FSTs as a fast, precise first stage (prototype: Kazakh worked, ~15 ms per check). **M**
 - [ ] **Normalization:**
   - Turkish deasciifier (Zemberek/VNLP style)
   - Kazakh noisy-text normalizer (KazNLP)
@@ -226,7 +233,37 @@ Fixed recently:
 - [ ] **Type hints and mypy** in CI; ruff + black pre-commit. **S**
 - [ ] **Notebooks:** add `sp_tokenize`, GlotLID, NLLB-as-pipeline and, once shipped, the spell checker and the Wiktionary lemmatizer to `turkic-nlp-code-samples`. Fix the duplicated notebook numbers and the transliteration guide examples there. **S**
 
-## 13. GenAI-era components
+## 13. LLM integration and GenAI-era components
+
+### 13.1 LLMs as toolkit components
+
+How it works: an LLM-backed processor is an ordinary pipeline processor. It fills a packaged,
+versioned prompt template (`turkicnlp/resources/prompts/*.json`) with the tokens/sentence and the
+language, sends it to the model through one client (`turkicnlp.llm.LLMClient`), validates the JSON
+answer and writes the normal `Document` fields. Users configure the model, not the prompt
+(`llm_model`, `llm_base_url`, `llm_api_key`, …); prompts can be overridden per processor.
+
+Done (first version):
+
+- [x] **Client layer** – OpenAI-compatible HTTP (OpenAI, Azure, vLLM, Ollama, llama.cpp, LM Studio, OpenRouter, …; no extra dependency), Claude (`llm_provider="anthropic"`) and local Hugging Face models; `scripts/start_vllm_server.sh` and `examples/llm_backend_demo.py`; JSON-schema output with automatic fallback for servers without it; retries; parallel requests; disk cache keyed on model + prompt + input; provenance in `_processor_log`.
+- [x] **Backends:** `morph=llm` (lemma/UPOS/feats), `morph=apertium_llm` (LLM chooses among Apertium readings — cannot invent analyses), `ner=llm`, `translate=llm`, `sentiment=llm`, new `spellcheck` processor (`sentence.correction`, rewrite guard).
+- [x] **`turkicnlp.llm.ask(question, doc=...)`** – free-form questions with the toolkit's analyses (tokens, lemmas, features, CTS, translation) as context.
+- [x] Shared settings for all processors (`llm_*`), per-processor overrides (`ner_llm_model=...`), custom prompt files and few-shot examples.
+
+Next:
+
+- [ ] **Evaluate before recommending:** per-language scores of the LLM backends against UD test sets (morph), KazNERD/WikiANN (NER), FLORES (MT) and the spell-checker test set, for 2–3 open and 1–2 API models. Mark per language whether the LLM backend is recommended. **M**
+- [ ] **Few-shot examples per language** drawn from UD treebanks / Wiktionary instead of the shared Turkish/Kazakh/Uzbek examples. **S**
+- [ ] **Candidate-selection backends:** LLM picks among NLLB n-best translations, ByT5/FST spelling suggestions and GlotLID's top labels for close relatives (kum/krc/nog, alt/kjh/tyv). **M**
+- [ ] **More LLM backends:** dependency parsing (with validation of tree structure), normalisation of colloquial / chat-style / code-switched text, transliteration repair for loanwords. **M**
+- [ ] **LLM post-editing of NLLB output** and LLM-as-judge quality estimation (calibrated with native speakers for small languages). **M**
+- [ ] **Toolkit as tools for LLMs:** an MCP server / function-calling schemas exposing `analyze_morphology`, `transliterate`, `segment_morphemes`, `detect_language`, `spellcheck`, `translate`. **M**
+- [ ] **CTS input for LLMs:** optionally send Common Turkic Alphabet text to the LLM (fewer tokens for Cyrillic/Arabic-script languages) and convert answers back. **S**
+- [ ] **Constrained decoding with the Apertium FST** so that generated words are valid forms (research). **L**
+- [ ] **Offline use of LLMs:** silver NER/SRL annotation to train small Glot500 models; synthetic errors for the spell checker. **M**
+- [ ] Async client and batching of several sentences per request for throughput; token/cost accounting. **S**
+
+### 13.2 Larger GenAI projects
 
 These come from the strategic component review. They are larger projects that build on the toolkit rather than live inside it.
 
@@ -284,7 +321,7 @@ Check licences and current versions before wrapping. Several survey notes predat
 | `generate-ud-annotations` | LLM translate-and-annotate CLI | Silver data for more languages |
 | `train-unified-models` | Design + skeleton code for a frozen-backbone multi-task parser | Unified parser backend (6) |
 | `train-unified-models/Wiktionary` | Kaikki dump analysed: 118K entries, 4.8M forms, 20 languages | Lookup lemmatizer, lexicons, neural morph data (4) |
-| `train-spell-checker` | Synthetic-error corpus (19.5K records, 13 languages, 49% Turkish), training/eval scripts, no real results yet | Spell checker backend (9) |
+| `train-spell-checker` | ByT5 pipeline: clean text from FineWeb-2, Wikipedia, news, Wiktionary and UD for 22 languages; Turkic error generator; language balancing; training, evaluation and inference scripts. The earlier Glot500 model was dropped (it changed 99% of correct words) | Spell checker backend (9) |
 | `news-scraper` | Config-driven scraper with per-region SQLite and JSONL output. Open source checks: Kazakh (6 of 9 outlets blocked), Kyrgyz (Super-Info, Maidan), South Azerbaijani (Araz, Oyannews, TRT), Tuvan (only shyn.ru, 60–70% Tuvan, needs LID filtering) | Monolingual corpora for SP training, LID tests and datasets (10) |
 | `dictionaries` | Word-list source survey for 10 languages; Turkmen (enedilim) scraped | `lexicon` lookup / `is_word()` / frequency API |
 | `parallel` | ud-turkic parallel treebanks (TueCL, Little Prince) for 9 languages | Evaluation data (11) |

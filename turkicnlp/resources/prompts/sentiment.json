@@ -1,0 +1,33 @@
+{
+ "version": 1,
+ "system": "Classify the sentiment expressed in a sentence written in {language} ({script_name} script).\nLabels: {labels}. Use neutral for factual statements without an evaluation.\nReturn JSON only: {\"label\": \"<label>\"}",
+ "user": "{text}",
+ "examples": {
+  "default": [
+   {
+    "vars": {
+     "text": "Bu film gerçekten harikaydı!"
+    },
+    "answer": {
+     "label": "positive"
+    }
+   },
+   {
+    "vars": {
+     "text": "Қызмет көрсету өте нашар болды."
+    },
+    "answer": {
+     "label": "negative"
+    }
+   },
+   {
+    "vars": {
+     "text": "Majlis soat uchda boshlanadi."
+    },
+    "answer": {
+     "label": "neutral"
+    }
+   }
+  ]
+ }
+}

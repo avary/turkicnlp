@@ -15,7 +15,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache-2.0"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue.svg" alt="Python 3.10 | 3.11 | 3.12"></a>
-  <img src="https://img.shields.io/badge/status-pre--alpha-orange.svg" alt="Status: Pre-Alpha">
+  <img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/languages-24_Turkic-green.svg" alt="24 Turkic Languages">
   <a href="https://github.com/turkic-nlp/turkicnlp/actions/workflows/test-installation.yml"><img src="https://github.com/turkic-nlp/turkicnlp/actions/workflows/test-installation.yml/badge.svg" alt="Package Installation Tests"></a>
 </p>
@@ -25,6 +25,7 @@
   <a href="#quick-start"><strong>Quick start</strong></a> ·
   <a href="ROADMAP.md"><strong>Roadmap</strong></a> ·
   <a href="CONTRIBUTING.md"><strong>Contributing</strong></a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
   <a href="https://arxiv.org/pdf/2602.19174">Paper</a> ·
   <a href="https://github.com/turkic-nlp/turkic-nlp-code-samples">Notebooks</a> ·
   <a href="https://huggingface.co/turkicnlp">🤗 Models &amp; data</a> ·
@@ -74,15 +75,15 @@ If you use TurkicNLP in your research, please cite:
 - **NLLB embeddings + translation backend** — sentence/document vectors and MT via [NLLB-200](https://huggingface.co/facebook/nllb-200-distilled-600M) (11 Turkic languages)
 - **Language identification (`LanguageDetection`, GlotLID model)** — FastText-based LID with 1,000+ Glottolog language labels
 - **Speech recognition (`SpeechRecognizer`)** — speech-to-text for 20 Turkic languages via Meta's [Omnilingual ASR](https://github.com/facebookresearch/omnilingual-asr), with output in TurkicNLP scripts and a speech → text → analysis pipeline
-- **Multilingual Glot500 neural models** — POS tagging & dependency parsing (15 languages), morphological analysis & lemmatization (23 languages) via shared [Glot500](https://github.com/cisnlp/Glot500) backbone
-- **Multiple backends** — choose between rule-based, Apertium FST, Stanza, or Glot500 neural backends per processor
+- **Multilingual Glot500 neural models** — POS tagging & dependency parsing (15 languages), morphological analysis & lemmatization (22 TurkicNLP languages) via shared [Glot500](https://github.com/cisnlp/Glot500) backbone
+- **LLM backend** — use any LLM for morphology, NER, translation, sentiment and spelling correction in all 24 languages: a local model served with [vLLM](https://docs.vllm.ai) or [Ollama](https://ollama.com), OpenAI, Claude, or an in-process Hugging Face model ([details](#llm-backend-local-vllm--ollama-openai-claude-or-a-hugging-face-model))
+- **Multiple backends** — choose between rule-based, Apertium FST, Stanza, Glot500 neural or LLM backends per processor
 - **License isolation** — library is Apache-2.0; Apertium GPL-3.0 data downloaded separately
 - **Stanza-compatible API** — `Pipeline`, `Document`, `Sentence`, `Word`
 
 ## Installation
 
-**Requirements:** Python 3.10 – 3.12. The core package and most extras still install on Python 3.9, but then
-pip resolves `transformers` 4.x (transformers 5 requires Python ≥ 3.10), and speech recognition is not available.
+**Requirements:** Python 3.10 – 3.12.
 
 TurkicNLP has a small core and optional extras for each group of components:
 
@@ -142,7 +143,7 @@ sudo apt-get install libsndfile1 cmake build-essential
 python3.10 -m venv venv-asr
 source venv-asr/bin/activate
 pip install --upgrade pip
-pip install "turkicnlp[all,asr]"      # from PyPI (from the first release that includes ASR)
+pip install "turkicnlp[all,asr]"      # from PyPI
 # or, from a clone of this repository:
 pip install -e ".[all,asr]"
 ```
@@ -205,7 +206,7 @@ print(turkicnlp.list_asr_languages(check_model=True))   # {'tur': {'Latn': 'tur_
 
 ### Platform compatibility
 
-Installation tests run nightly across all combinations of OS, Python version, and install extra (see [CI workflow](https://github.com/turkic-nlp/turkicnlp/actions/workflows/test-installation.yml)).
+Installation tests run on every push and pull request and nightly, across all combinations of OS, Python version and install extra below; the test suite (`pytest -m "not slow"`) runs on Ubuntu and macOS (see [CI workflow](https://github.com/turkic-nlp/turkicnlp/actions/workflows/test-installation.yml)).
 
 | Extra | Ubuntu 22.04 / 24.04 | macOS 14 / 15 | Windows 2025 |
 |---|---|---|---|
@@ -461,6 +462,197 @@ print(doc._processor_log)  # ['translate:nllb']
 HTML entities that NLLB sometimes produces (`&apos;`, `&quot;`) are converted back to plain characters.
 `translate_tgt_lang` accepts either ISO-639-3 (`"eng"`, `"tuk"`, `"kaz"`) or explicit [Flores-200 codes](https://github.com/facebookresearch/flores/tree/main/flores200#languages-in-flores-200) (`"eng_Latn"`, `"kaz_Cyrl"`).
 
+### LLM Backend (local vLLM / Ollama, OpenAI, Claude, or a Hugging Face model)
+
+Five processors (six backends) can use a large language model, for **all 24 languages** — including
+languages without any trained model, such as Khakas, Tuvan or Nogai. The toolkit sends the request, so you
+only say *which* LLM to use: a server URL plus an API key, or a local Hugging Face model id. The OpenAI-style
+API is spoken by OpenAI, Azure OpenAI, vLLM, Ollama, llama.cpp, LM Studio, OpenRouter and others; Claude is
+supported through Anthropic's OpenAI-compatible endpoint. No extra package is needed for the API case.
+
+| Backend | What the LLM does | Writes |
+|---|---|---|
+| `morph=llm` | lemma, UPOS and UD features for every token | `word.lemma/upos/feats` |
+| `morph=apertium_llm` | Apertium analyses as usual; for ambiguous words the LLM **chooses** one of the transducer's readings (it cannot invent an analysis); a configured `apertium_tagger_cmd` still decides first, and all sentences go to the LLM as one parallel batch | `word.lemma/upos/feats` |
+| `ner=llm` | entity spans over the toolkit's tokens (labels: `ner_labels=["PER", "LOC", "ORG"]`) | `word.ner`, `sentence.entities` |
+| `translate=llm` | translation into `translate_tgt_lang` (ISO code or language name) | `sentence.translation`, `doc.translation` |
+| `sentiment=llm` | `positive` / `negative` / `neutral` (or `sentiment_labels=[...]`) | `sentence.sentiment` |
+| `spellcheck=llm` | spelling correction; answers that rewrite >30% of a sentence are rejected | `sentence.correction`, `sentence.corrections`, `doc.corrected_text` |
+
+#### 1. Local model with vLLM (GPU server)
+
+Start an OpenAI-compatible server with a small model (Linux + NVIDIA GPU; install vLLM in its own
+environment, `pip install vllm`):
+
+```bash
+bash scripts/start_vllm_server.sh                                   # Qwen/Qwen2.5-1.5B-Instruct on :8000
+MODEL=Qwen/Qwen3-8B PORT=8001 bash scripts/start_vllm_server.sh     # another model / port
+GPUS=0,1 TP=2 MODEL=Qwen/Qwen3-32B bash scripts/start_vllm_server.sh # two GPUs
+```
+
+Then use it from TurkicNLP (from another machine, replace `localhost` with the server name):
+
+```python
+import turkicnlp
+
+nlp = turkicnlp.Pipeline(
+    "kaz",
+    processors=["tokenize", "morph", "ner", "sentiment", "spellcheck", "translate"],
+    morph_backend="llm", ner_backend="llm", sentiment_backend="llm", translate_backend="llm",
+    translate_tgt_lang="eng",
+    llm_model="Qwen/Qwen2.5-1.5B-Instruct",       # the model the server was started with
+    llm_base_url="http://localhost:8000/v1",
+    llm_api_key="turkicnlp-local",                # API_KEY of start_vllm_server.sh
+)
+doc = nlp("Қасым-Жомарт Тоқаев кеше Астанада шетелдік инвесторлармен кездесті.")
+
+for w in doc.words:
+    print(w.text, w.lemma, w.upos, w.feats)
+print(doc.entities, doc.sentences[0].sentiment, doc.corrected_text, doc.translation)
+```
+
+Without a GPU (e.g. on a Mac) use [Ollama](https://ollama.com) the same way:
+`ollama pull qwen2.5:7b`, then `llm_model="qwen2.5:7b", llm_base_url="http://localhost:11434/v1", llm_api_key="ollama"`.
+
+#### 2. OpenAI
+
+```python
+import os, turkicnlp
+
+os.environ["OPENAI_API_KEY"] = "sk-..."           # or pass llm_api_key="sk-..."
+
+nlp = turkicnlp.Pipeline(
+    "uzb",
+    processors=["tokenize", "ner", "translate"],
+    ner_backend="llm", translate_backend="llm", translate_tgt_lang="deu",
+    llm_model="gpt-4.1-mini",                     # any chat model of your account
+)                                                  # llm_base_url defaults to https://api.openai.com/v1
+doc = nlp("Shavkat Mirziyoyev Toshkentda yangi maktabni ochdi.")
+print(doc.entities, doc.translation)
+```
+
+#### 3. Claude (Anthropic)
+
+```python
+import os, turkicnlp
+
+os.environ["ANTHROPIC_API_KEY"] = "sk-ant-..."    # or pass llm_api_key="sk-ant-..."
+
+nlp = turkicnlp.Pipeline(
+    "tyv",
+    processors=["tokenize", "morph", "spellcheck"],
+    morph_backend="llm",
+    llm_provider="anthropic",                     # https://api.anthropic.com/v1, key from ANTHROPIC_API_KEY
+    llm_model="claude-sonnet-4-6",
+)
+doc = nlp("Мен бөгүн школага бардым.")
+print([(w.text, w.lemma, w.upos, w.feats) for w in doc.words], doc.corrected_text)
+```
+
+Model names change; use any model your account offers. With `llm_provider="anthropic"` no `temperature`
+is sent, because recent Claude models only accept the default.
+
+#### 4. Hugging Face model in-process (no server)
+
+```python
+nlp = turkicnlp.Pipeline("tur", processors=["tokenize", "ner"], ner_backend="llm",
+                         llm_provider="hf", llm_model="Qwen/Qwen2.5-1.5B-Instruct")
+```
+
+Needs `pip install "turkicnlp[transformers]"`; requests run one at a time, so this is for small models and
+small amounts of text. For anything larger, serve the model with vLLM.
+
+#### Example run
+
+`examples/llm_backend_demo.py` runs all LLM backends on one text (`--backend vllm | ollama | openai | claude | hf`):
+
+```text
+$ python examples/llm_backend_demo.py --backend hf --model Qwen/Qwen2.5-1.5B-Instruct --lang kaz
+
+Model: Qwen/Qwen2.5-1.5B-Instruct (hf)
+Text:  Қасым-Жомарт Тоқаев кеше Астанада шетелдік инвесторлармен кездесті. Бұл кездесу өте пайдалы болды.
+
+Morphology:
+  Қасым-Жомарт
+  Тоқаев
+  кеше
+  Астанада
+  шетелдік
+  инвесторлармен
+  кездесті
+  .
+  Бұл                    бұл                DET    Case=Gen|Definite=Def|Num=One
+  кездесу                кездесу            NOUN   Case=Acc|Gender=Fem|Number=Sing|PronType=Dem
+  өте                    өте                ADP    Case=Loc
+  пайдалы                пайда              NOUN   Case=Acc|Gender=Masc|Number=Sing|PronType=Dem
+  болды                  болды              VERB   Aspect=Perf|Mood=Ind|Number=Sing|Person=3|Polarity=Pos|Tense=Pres|VerbForm=Fin
+  .                      .                  PUNCT  _
+
+Entities:    [('Қасым-Жомарт Тоқаев', 'PER'), ('Астанада', 'LOC'), ('инвесторлармен', 'ORG')]
+Sentiment:   ['positive', 'positive']
+Spelling:    Қазым-Жомарт Тоқаев кеше Астанада шетелдік инвесторлармен кездесті. Бұл кездесу өте пайдалы болды. [('Қасым-Жомарт', 'Қазым-Жомарт')]
+Translation: Kasym-Jomart Tokayev metalled in Astana to meet investors. It is very useful.
+
+Provenance:  ['tokenize:stanza', 'spellcheck:llm(Qwen/Qwen2.5-1.5B-Instruct, spellcheck/v1)',
+              'morph:llm(Qwen/Qwen2.5-1.5B-Instruct, morph/v2)[1 failed]', 'ner:llm(Qwen/Qwen2.5-1.5B-Instruct, ner/v1)',
+              'sentiment:llm(Qwen/Qwen2.5-1.5B-Instruct, sentiment/v1)', 'translate:llm(Qwen/Qwen2.5-1.5B-Instruct, translate/v1)']
+Time: 274.7s
+```
+
+This run used a 1.5B-parameter model on a laptop, which shows both how the backend works and why the model
+matters:
+
+* **Validated output.** For the first sentence the model's morphology answer did not cover the tokens, even
+  after a retry with feedback, so those fields stay empty and the log says `[1 failed]` — the toolkit does not
+  write shifted or invented analyses. With `morph_on_error="raise"` it would stop instead.
+* **Spelling guard.** Word changes that are not spelling fixes (rewritten suffixes, added words) are reverted;
+  a plausible-looking one-letter change such as *Қасым → Қазым* still gets through, which is a model error.
+* **Quality.** Lemmas, features, the *ORG* label and "metalled" are wrong: a 1.5B model is enough to test the
+  set-up, not for Kazakh analysis. Use a larger model (e.g. Qwen3-32B on vLLM, GPT or Claude) for real work,
+  and evaluate it on your language first.
+
+#### How it works and where the prompt is
+
+Each LLM backend is an ordinary pipeline processor. It fills its prompt template — one versioned file per
+task in `turkicnlp/resources/prompts/*.json` — with the language, script, the toolkit's tokens and a few
+examples, asks the model for JSON, validates the answer (and asks once more if it is unusable) and writes
+the normal `Document` fields. `doc._processor_log` records model and prompt version, e.g.
+`ner:llm(Qwen/Qwen2.5-1.5B-Instruct, ner/v1)`. Replace a prompt with `ner_prompt_file="my_ner.json"` (in a template only `{name}` placeholders of
+known variables are filled; other braces, e.g. a JSON example, are left as written) or
+add examples with `ner_examples=[{"vars": {"tokens": [...]}, "answer": {...}}]`.
+
+**Settings** (`llm_*` applies to all LLM processors; `<processor>_llm_*` overrides one of them, e.g.
+`ner_llm_model="gpt-4.1"`):
+
+| Option | Default | |
+|---|---|---|
+| `llm_model` | env `TURKICNLP_LLM_MODEL` | model name / Hugging Face id |
+| `llm_base_url` | env `TURKICNLP_LLM_BASE_URL`, else `https://api.openai.com/v1` | e.g. `http://localhost:8000/v1` (vLLM), `http://localhost:11434/v1` (Ollama) |
+| `llm_api_key` | env `TURKICNLP_LLM_API_KEY`; `OPENAI_API_KEY` only when `llm_base_url` is `api.openai.com`; `ANTHROPIC_API_KEY` for `anthropic` | sent as `Authorization: Bearer …`; masked in `repr(LLMConfig)` (as are header values) |
+| `llm_provider` | `openai` | `anthropic` (Claude), `hf` (local `transformers` model) |
+| `llm_headers`, `llm_extra_body` | – | extra HTTP headers (e.g. Azure `api-key`) / request fields |
+| `llm_temperature`, `llm_max_tokens` | 0.0, 2048 | `llm_temperature=None` sends no temperature |
+| `llm_timeout`, `llm_max_retries`, `llm_max_workers` | 120 s, 3, 4 | parallel requests per document; `Retry-After` waits are capped at 60 s |
+| `llm_json_mode` | `auto` | JSON schema → JSON object → plain prompt, stepping down only when the server answers that the `response_format` is unsupported |
+| `llm_cache`, `llm_cache_dir` | on, `~/.turkicnlp/llm_cache.sqlite` | identical requests are answered from the cache; only answers that passed validation are stored; an unwritable cache location disables the cache with a warning |
+| `<processor>_on_error` | `warn` | `raise` to stop on unusable answers (an unusable answer — invalid JSON, an HTML error page, a dropped connection — only affects its own sentence) |
+| `translate_tgt_lang`, `translate_tgt_script` | `eng` | target as code (`uzb`), code with script (`uzb_Cyrl`) or name; the prompt names the script, e.g. "Uzbek (Cyrillic script)" |
+| `llm_client` | – | pass one `turkicnlp.LLMClient` object to share it |
+
+Free-form questions with the toolkit's analyses as context:
+
+```python
+doc = turkicnlp.Pipeline("kaz", processors=["tokenize", "morph"])("Мен кеше мектепке бардым.")
+print(turkicnlp.llm.ask("Explain the verb form in this sentence.", doc=doc,
+                        llm_provider="anthropic", llm_model="claude-sonnet-4-6"))
+```
+
+The context sent with the question is limited to `max_words=400` words (`ask(..., max_words=...)`).
+
+> LLM quality differs strongly between languages (good for Turkish, Kazakh, Uzbek, Azerbaijani; often weak
+> for Khakas, Tuvan, Nogai or Kumyk). Evaluate a model for your language before relying on it, and remember
+> that the text is sent to the server you configure.
+
 ### Using the Stanza Backend
 
 ```python
@@ -610,7 +802,7 @@ from turkicnlp.scripts.transliterator import Transliterator
 t = Transliterator("otk", Script.OLD_TURKIC_RUNIC, Script.LATIN)
 
 # Individual runic characters
-print(t.transliterate("\U00010C34\U00010C07\U00010C2F\U00010C19"))
+print(t.transliterate("\U00010C45\U00010C07\U00010C3C\U00010C1A"))  # 𐱅𐰇𐰼𐰚
 # → törk  (Türk)
 
 # The transliterator maps each runic character to its standard
@@ -706,7 +898,7 @@ print(result.labeled)
 # [('bola', 'STEM'), ('lar', 'PLUR'), ('ning', 'GEN')]
 ```
 
-Suffix allomorph tables exist for all 24 languages (`turkicnlp/resources/morpheme_rules.json`); the Apertium path is
+Suffix allomorph tables exist for 23 languages (`turkicnlp/resources/morpheme_rules.json`; all except Old Turkic); the Apertium path is
 available for the 20 languages with a transducer. Results are cached per word (`MorphemeTokenizer(lang, cache_size=...)`).
 
 ### Morpheme-aware subword tokenization (`sp_tokenize`)
@@ -791,7 +983,7 @@ The table below shows all supported languages with their available scripts and p
 | ● | [Stanza/UD](https://stanfordnlp.github.io/stanza/) | Neural models trained on [Universal Dependencies](https://universaldependencies.org/) treebanks |
 | ▲ | Custom Stanza | Custom-trained Stanza models hosted by [turkic-nlp](https://github.com/turkic-nlp/trained-stanza-models) |
 | ◇ | [Glot500](https://github.com/cisnlp/Glot500) Neural | Multilingual POS tagger & dependency parser (Glot500 backbone, 15 languages) |
-| ◈ | [Glot500](https://github.com/cisnlp/Glot500) Neural Morph | Multilingual morphological analyzer & lemmatizer (Glot500 backbone, 23 languages) |
+| ◈ | [Glot500](https://github.com/cisnlp/Glot500) Neural Morph | Multilingual morphological analyzer & lemmatizer (Glot500 backbone, 22 languages) |
 | ★ | [NLLB](https://huggingface.co/facebook/nllb-200-distilled-600M) | Embeddings and machine translation via NLLB-200 |
 | ◎ | [Omnilingual ASR](https://github.com/facebookresearch/omnilingual-asr) | Speech recognition (`SpeechRecognizer`, speech + text environment) |
 | ○ | Planned | Implementation planned |
@@ -826,7 +1018,7 @@ The table below shows all supported languages with their available scripts and p
 | Language | Code | Script(s) | Tokenize | Morph | POS | Lemma | DepParse | NER | Embed | Translate | ASR |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | [Uzbek](https://en.wikipedia.org/wiki/Uzbek_language) | `uzb` | Latn, Cyrl | ■ ▲ | ◆ ◈ | ▲ ◇ | ▲ ◈ | ▲ ◇ | — | ★ | ★ | ◎ |
-| [Uyghur](https://en.wikipedia.org/wiki/Uyghur_language) | `uig` | Arab, Latn | ■ ● | ◆ ◈ | ● ◇ | ● ◈ | ● ◇ | — | ★ | ★ | ◎ |
+| [Uyghur](https://en.wikipedia.org/wiki/Uyghur_language) | `uig` | Arab, Latn, Cyrl | ■ ● | ◆ ◈ | ● ◇ | ● ◈ | ● ◇ | — | ★ | ★ | ◎ |
 
 ### Siberian Branch
 
@@ -869,7 +1061,7 @@ The Stanza backend provides neural models trained on [Universal Dependencies](ht
 | Uzbek | `uz` | ▲ | UzUDT | tokenize, pos, lemma, depparse | — |
 | Turkmen | `tk` | ▲ | [Tk-TUD](https://github.com/turkic-nlp/generated-ud-data/tree/main/tuk) | tokenize, pos, lemma, depparse | — |
 | Azerbaijani | `az` | ▲ | [Az-TUD](https://github.com/turkic-nlp/generated-ud-data/tree/main/aze) | tokenize, pos, lemma, depparse | — |
-| Tatar | `ta` | ▲ | [Ta-TUD](https://github.com/turkic-nlp/generated-ud-data/tree/main/tat) | tokenize, pos, lemma, depparse | — |
+| Tatar | `tt` | ▲ | [Ta-TUD](https://github.com/turkic-nlp/generated-ud-data/tree/main/tat) | tokenize, pos, lemma, depparse | — |
 | Bashkir | `ba` | ▲ | [Ba-TUD](https://github.com/turkic-nlp/generated-ud-data/tree/main/bak) | tokenize, pos, lemma, depparse | — |
 
 ### Multilingual Glot500 Neural Models
@@ -879,7 +1071,7 @@ TurkicNLP provides two multilingual neural models built on a frozen [Glot500](ht
 | Model | Symbol | Tasks | Languages | Architecture |
 |---|:---:|---|---|---|
 | POS & DepParser | ◇ | UPOS, dependency parsing | 10 trained + 5 zero-shot (15 total) | Glot500 → ScriptAdapter → LangEmbed → BiLSTM → POS Head + Biaffine Parser |
-| Morph Analyzer | ◈ | UPOS, UD morph features, lemmatization | 20 trained + 3 zero-shot (23 total) | Glot500 → ScriptAdapter → LangEmbed → BiLSTM → POS Head + MorphFeat Head + CharCNN LemmaHead |
+| Morph Analyzer | ◈ | UPOS, UD morph features, lemmatization | 20 trained + 3 zero-shot (23 model languages = 22 TurkicNLP codes; both Altai varieties map to `alt`) | Glot500 → ScriptAdapter → LangEmbed → BiLSTM → POS Head + MorphFeat Head + CharCNN LemmaHead |
 
 **POS & DepParser supported languages:** Turkish, Azerbaijani, Uzbek, Turkmen, Kazakh, Kyrgyz, Bashkir, Tatar, Uyghur, Ottoman Turkish + zero-shot: Karakalpak, Kumyk, Sakha, Karachay-Balkar, Nogai
 
@@ -898,7 +1090,7 @@ Bidirectional script conversion is available for all multi-script languages. The
 | Turkmen | ↔ Bidirectional | Cyrillic ↔ Latin | 1993 official Latin alphabet |
 | Karakalpak | ↔ Bidirectional | Cyrillic ↔ Latin | 2016 Latin alphabet |
 | Crimean Tatar | ↔ Bidirectional | Cyrillic ↔ Latin | Standard Crimean Tatar Latin |
-| Uyghur | ↔ Bidirectional | Perso-Arabic ↔ Latin | Uyghur Latin Yéziqi (ULY) |
+| Uyghur | ↔ Bidirectional | Perso-Arabic ↔ Latin, Perso-Arabic ↔ Cyrillic, Latin ↔ Cyrillic | Uyghur Latin Yéziqi (ULY), Uyghur Cyrillic |
 | Ottoman Turkish | → One-way | Latin → Perso-Arabic | Academic transcription |
 | Old Turkic | → One-way | Runic → Latin | Turkological convention |
 | All except Old Turkic (23) | → native script to CTS | Latin / Cyrillic / Perso-Arabic → CTS | [Common Turkic Alphabet](https://en.wikipedia.org/wiki/Common_Turkic_alphabet) |
@@ -944,8 +1136,8 @@ Pipeline("tur", processors=["tokenize", "morph", "pos", "ner", "depparse"])
     ├── script_detect    → script = "Latn"
     ├── tokenize         → sentences, tokens, words
     ├── morph (Apertium) → lemma, pos, feats (via HFST)
-    ├── pos (neural)     → refined UPOS, XPOS, feats
-    ├── ner (neural)     → BIO tags and entity spans
+    ├── pos (Stanza)     → UPOS, XPOS, feats (owns these fields)
+    ├── ner (Stanza)     → BIO tags and entity spans
     └── depparse         → head, deprel
     │
     ▼
@@ -991,20 +1183,37 @@ as `<name>_<option>=...` (e.g. `translate_tgt_lang="eng"`). Dependencies are add
 |---|---|---|---|
 | `tokenize` | `rule`, `rule_arabic`, `stanza` | sentences, tokens, words | ✓ |
 | `mwt` | `neural` (rule-based), `stanza` | multi-word token expansion | ✓ (where available) |
-| `morph` | `apertium` | lemma, UPOS, feats (HFST) | ✓ |
+| `morph` | `apertium`, `llm`, `apertium_llm` | lemma, UPOS, feats (HFST / LLM / HFST + LLM choice) | ✓ (`apertium`) |
 | `morph_neural` | `multilingual_glot500_morph` | UPOS, feats, lemma | ✓ if no `morph` |
 | `pos` | `stanza`, `multilingual_glot500_model` | UPOS, XPOS, feats | ✓ |
 | `feats` | `multilingual_glot500_morph` | UD features | ✓ |
 | `lemma` | `stanza`, `multilingual_glot500_morph` | lemma | ✓ |
 | `depparse` | `stanza`, `multilingual_glot500_model` | head, deprel | ✓ |
-| `ner` | `stanza` (tur, kaz) | BIO tags, entity spans | ✓ |
+| `ner` | `stanza` (tur, kaz), `llm` (all) | BIO tags, entity spans | ✓ (`stanza`) |
 | `embeddings` | `nllb` | sentence/document vectors | – |
-| `translate` | `nllb` | sentence/document translation | – |
+| `translate` | `nllb`, `llm` | sentence/document translation | – |
+| `sentiment` | `llm` | sentence sentiment label | – |
+| `spellcheck` | `llm` | `sentence.correction`, `doc.corrected_text` | – |
 | `sp_tokenize` | `sentencepiece` | `sp_tokens`, `sp_ids` | – |
 | `asr` | Omnilingual ASR (via `Pipeline.from_audio`) | transcript | – |
 
-`turkicnlp.list_processors("kaz")` lists what the catalog offers for a language. `sentiment` and the
-`neural` backends of `tokenize`, `pos`, `lemma`, `depparse` and `ner` are placeholders and not usable yet.
+`turkicnlp.list_processors("kaz")` lists what the catalog offers for a language; the `llm` backends work for every
+language and are not listed there. `sentiment` without a backend option uses `llm`. The placeholder backends
+`tokenize=neural`, `morph=neural`, `pos=neural`, `lemma=neural`, `lemma=dictionary`, `depparse=neural` and
+`sentiment=neural` are registered but not implemented; the pipeline never selects them by itself.
+
+**Which processor writes which field.** Each word field has one owner per pipeline: the last processor in
+execution order that provides it (`pos` owns UPOS/XPOS, `feats` FEATS, `lemma` LEMMA, `depparse` HEAD/DEPREL; a
+full analyser such as `morph` owns the fields that no later step provides). In the default Turkish pipeline
+(`morph`, `pos`, `lemma`, `depparse`) Stanza therefore provides UPOS, FEATS and LEMMA. What other processors wrote
+is kept per word in `word._provenance` (e.g. `word._provenance["morph"]` holds the Apertium lemma, UPOS and FEATS),
+and FEATS from a different processor than UPOS are dropped for a word when that processor's own UPOS disagrees.
+When `morph=apertium` is in the default set, the Glot500 `feats`/`lemma` steps of the same language are left out.
+
+**Scripts without models.** If a language has no models for the input script (e.g. Uzbek Cyrillic, Kazakh
+Latin), the pipeline transliterates the text to the script that has them and maps the results back: word texts and
+character offsets refer to the original input, lemmas are transliterated back, and `doc._model_text` holds the
+transliterated text.
 
 ### Key Abstractions
 
@@ -1022,14 +1231,11 @@ as `<name>_<option>=...` (e.g. `translate_tgt_lang="eng"`). Dependencies are add
 ├── kaz/
 │   ├── Cyrl/
 │   │   ├── tokenize/rule/
-│   │   ├── morph/apertium/    ← GPL-3.0 (downloaded separately)
-│   │   │   ├── kaz.automorf.hfst
-│   │   │   ├── LICENSE
-│   │   │   └── metadata.json
-│   │   ├── pos/neural/
-│   │   └── depparse/neural/
-│   └── Latn/
-│       └── tokenize/rule/
+│   │   └── morph/apertium/    ← GPL-3.0 (downloaded separately)
+│   │       ├── kaz.automorf.hfst
+│   │       ├── LICENSE
+│   │       └── metadata.json
+│   └── ...
 ├── tur/
 │   └── Latn/
 │       └── ...
@@ -1046,9 +1252,9 @@ as `<name>_<option>=...` (e.g. `translate_tgt_lang="eng"`). Dependencies are add
 │       ├── model.safetensors (or pytorch_model.bin)
 │       ├── tokenizer.json
 │       └── ...
-└── catalog.json
+└── stanza/, stanza_custom/                ← Stanza models
 
-# Stanza models are managed by Stanza at ~/stanza_resources/
+# Stanza models (official and custom) are stored under ~/.turkicnlp/models/stanza*/
 ```
 
 Notes:
